@@ -8,6 +8,14 @@ DBfock is a focused, lightweight alternative to traditional database IDEs. It br
 
 Run it in the browser with Docker or local dev servers, or package it as a native desktop app with Wails.
 
+![DBfock screenshot](./screenshot.png)
+
+## Support
+
+DBfock is currently distributed without Apple Developer ID notarization. If you want to support the project and help fund the Apple Developer license, you can do it here:
+
+[Buy me a coffee](https://buymeacoffee.com/alexclaz)
+
 ## Why DBfock
 
 - **Query data with less friction:** connect, browse schemas, open tables, and run SQL without leaving the workspace.
@@ -110,6 +118,7 @@ frontend/
 docker-compose.yml         Web stack with frontend and backend
 Makefile                   Common development commands
 banner.png                 README banner
+screenshot.png             README screenshot
 ```
 
 ## Run with Docker
@@ -158,7 +167,7 @@ On macOS, the generated app is written under `backend/build/bin/`. The desktop a
 
 ### macOS Gatekeeper
 
-Release builds are ad-hoc signed, but they are not notarized with an Apple Developer ID yet. If macOS shows **"DBfock is damaged and can't be opened"** after downloading the ZIP from GitHub, remove the quarantine attribute:
+Local builds are not notarized with an Apple Developer ID yet. If macOS shows **"DBfock is damaged and can't be opened"** after moving a downloaded app into Applications, remove the quarantine attribute:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/DBfock.app

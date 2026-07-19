@@ -100,6 +100,24 @@ make build-desktop
 
 On macOS, the generated app is written under `backend/build/bin/` and can be opened from Finder or the terminal. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
 
+## Release
+
+GitHub Actions builds desktop binaries automatically when a version tag is pushed.
+
+```bash
+git add README.md banner.png .github backend/wails.json
+git commit -m "Prepare release v0.5.0"
+git tag -a v0.5.0 -m "v0.5.0"
+git push origin main
+git push origin v0.5.0
+```
+
+The `Release` workflow builds and attaches:
+
+- `DBfock-v0.5.0-macOS.zip`
+- `DBfock-v0.5.0-Windows.zip`
+- `DBfock-v0.5.0-Linux.tar.gz`
+
 ## Useful commands
 
 | Command | Description |

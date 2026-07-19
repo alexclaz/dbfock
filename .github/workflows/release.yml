@@ -54,6 +54,12 @@ jobs:
           NUXT_PUBLIC_API_BASE: http://127.0.0.1:8080/api
         run: make build-desktop
 
+      - name: Ad-hoc sign macOS app
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - backend/build/bin/DBfock.app
+          codesign --verify --deep --strict --verbose=2 backend/build/bin/DBfock.app
+
       - name: Package macOS app
         if: runner.os == 'macOS'
         run: |

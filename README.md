@@ -156,6 +156,16 @@ make build-desktop
 
 On macOS, the generated app is written under `backend/build/bin/`. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
 
+### macOS Gatekeeper
+
+Release builds are ad-hoc signed, but they are not notarized with an Apple Developer ID yet. If macOS shows **"DBfock is damaged and can't be opened"** after downloading the ZIP from GitHub, remove the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/DBfock.app
+```
+
+Then open DBfock again. If you kept the app somewhere else, replace `/Applications/DBfock.app` with that path.
+
 ## First Steps
 
 1. Click **Create connection**.

@@ -7,8 +7,8 @@
     "build": "nuxt build",
     "generate": "nuxt generate",
     "typecheck": "nuxt prepare && nuxt typecheck",
-    "dev:wails": "NUXT_PUBLIC_API_BASE=http://127.0.0.1:8080/api nuxt dev --host 127.0.0.1 --port 1420",
-    "generate:wails": "NUXT_PUBLIC_API_BASE=http://127.0.0.1:8080/api nuxt generate && sh scripts/copy-wails-assets.sh",
+    "dev:wails": "nuxt dev --host 127.0.0.1 --port 1420",
+    "generate:wails": "nuxt generate && node scripts/copy-wails-assets.mjs",
     "dev:desktop": "cd ../backend && wails dev",
     "build:desktop": "cd ../backend && wails build"
   },

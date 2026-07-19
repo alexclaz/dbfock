@@ -50,6 +50,8 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
       - name: Build desktop app
+        env:
+          NUXT_PUBLIC_API_BASE: http://127.0.0.1:8080/api
         run: make build-desktop
 
       - name: Package macOS app

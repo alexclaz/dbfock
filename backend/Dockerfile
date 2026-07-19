@@ -5,7 +5,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dbfock-api ./cmd/api
 
-FROM alpine:3.21
+FROM alpine:3.24
 RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY --from=build /out/dbfock-api /app/dbfock-api

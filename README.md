@@ -2,75 +2,133 @@
 
 # DBfock
 
-DBfock is a focused MySQL workspace for browsing schemas, inspecting data, running SQL, saving useful queries, and working with AI-assisted database tooling. It is inspired by database IDEs such as DBeaver and DataGrip, but keeps the interface quiet and workspace-first.
+**A modern MySQL workspace for exploring schemas, querying data, and using AI with real database context.**
 
-DBfock runs as a browser app through Docker or local development servers, and as a native desktop app through Wails.
+DBfock is a focused, lightweight alternative to traditional database IDEs. It brings MySQL connections, schema browsing, SQL editing, tabbed results, saved queries, auditability, and AI assistance into a clean workspace built for people who need to understand and operate databases every day.
 
-## What it does
+Run it in the browser with Docker or local dev servers, or package it as a native desktop app with Wails.
 
-- Create, test, edit, import, export, and securely store MySQL connections.
-- Browse databases, tables, views, columns, indexes, constraints, foreign keys, triggers, references, DDL, and paginated table data.
-- Run SQL with query history, cancellable requests, bounded result sets, CSV/JSON/TSV export, and multiple result tabs.
-- Save reusable SQL snippets and generate parameterized smart queries from selected SQL.
-- Use the AI agent panel for schema-aware query explanation, improvement, and chat, with configurable OpenAI, OpenRouter, Anthropic, or Ollama providers.
-- Track AI audit logs and connection-level query stats.
-- Mark connections as development or production and commit or roll back pending production transactions explicitly.
-- Customize themes, text scale, shortcuts, and connection colors.
-- Import compatible MySQL connection metadata from DBeaver project files.
+## Why DBfock
 
-## Architecture
+- **Query data with less friction:** connect, browse schemas, open tables, and run SQL without leaving the workspace.
+- **AI that understands your schema:** choose the database/table scope, then ask the agent to explain queries, improve SQL, or generate new statements with context.
+- **Safer production work:** production connections hold pending changes until you explicitly commit or roll them back.
+- **Persistent workflow:** tabs, history, saved queries, Smart Queries, and preferences are ready when you come back.
+- **Local-first security:** connection passwords and AI keys are encrypted in the application store.
+- **Easy migration:** import compatible MySQL connection metadata from DBeaver projects.
+
+## Features
+
+### Database Workspace
+
+- Create, test, edit, import, and export MySQL connections.
+- Assign connection colors and mark each connection as development or production.
+- Browse connections, connection status, databases, and tables from the sidebar.
+- Work in tabs for home, tables, SQL, stats, saved queries, Smart Queries, and settings.
+- Use global search to jump across tabs, saved queries, Smart Queries, and settings.
+
+### Schema Navigation
+
+- List databases, tables, and views.
+- Inspect table structure.
+- View columns, indexes, constraints, foreign keys, references, triggers, and DDL.
+- Open paginated table data in a grid.
+
+### SQL Editor
+
+- CodeMirror-powered SQL editor.
+- Run SQL with `Ctrl/Cmd + Enter`.
+- Run into a new result tab with `Ctrl/Cmd + \`.
+- Query history.
+- Multiple result tabs.
+- Cancellable queries by request id.
+- Row limits, pagination, and query timeouts.
+- Export results as CSV, JSON, and TSV.
+- Formatting, editor search, copy/paste actions, and productivity shortcuts.
+
+### AI for SQL
+
+- AI agent panel attached to SQL tabs.
+- Providers: OpenAI, OpenRouter, Anthropic, and Ollama.
+- Model selection from the configured provider.
+- Optional use of the currently open editor query as context.
+- Configurable schema scope: all databases/tables or a manual selection.
+- Quick actions to explain SQL, improve SQL, and insert AI-generated SQL into the editor.
+- Smart Queries generated from filtered SELECT statements, with editable parameters for reuse without hand-editing SQL.
+- Local AI audit logs with the sent prompt, received response, execution stage, provider, and model.
+
+### Operations and Security
+
+- Connection passwords and API keys are encrypted with AES-GCM.
+- Password values are not returned in API responses, exports, or logs.
+- Schema identifiers are validated before SQL interpolation.
+- Pagination values are parameterized.
+- Payload size, returned rows, concurrency, MySQL pool sizes, and query timeouts are bounded.
+- CORS allow-listing, rate limiting, and consistent error responses.
+
+### Customization
+
+- Interface available in English and Brazilian Portuguese.
+- Themes for GitHub, VS Code, One Dark, Dracula, Cobalt2, Claude Code, Codex, and Monokai.
+- Text scale controls.
+- Keyboard shortcut reference in settings.
+
+## How It Works
 
 ```text
 Nuxt 4 / Vue 3 / TypeScript
         | REST
 Go + Chi API -- provider registry -- MySQL (`database/sql`)
         |
-SQLite application store (connections, settings, history, audit logs)
+Local SQLite application store
 
-Wails v2 packages the Nuxt build and starts the local Go API in-process.
+Wails v2 packages the Nuxt build and starts the local Go API inside the desktop app.
 ```
 
-- **Backend:** Go 1.24, Chi, `database/sql`, `github.com/go-sql-driver/mysql`, SQLite through `modernc.org/sqlite`, and Wails v2 for desktop packaging.
-- **Frontend:** Nuxt 4.4, Vue 3 Composition API, Pinia, Tailwind CSS, and CodeMirror SQL editing.
-- **Provider boundary:** the `database.Provider` interface isolates database-specific discovery, data, and query behavior. MySQL is implemented today; PostgreSQL, SQL Server, or SQLite can be added behind the same HTTP surface.
-- **Application data vs. managed data:** SQLite stores DBfock metadata only. It does not replace or mingle with the MySQL databases being managed.
+- **Backend:** Go 1.24, Chi, `database/sql`, `github.com/go-sql-driver/mysql`, SQLite through `modernc.org/sqlite`, and Wails v2.
+- **Frontend:** Nuxt 4.4, Vue 3 Composition API, Pinia, Tailwind CSS, and CodeMirror.
+- **Provider boundary:** the `database.Provider` interface separates schema discovery, data reads, and query execution. MySQL is implemented today; additional database engines can be added behind the same HTTP contract.
+- **Local SQLite:** stores DBfock metadata only, such as connections, preferences, history, and audit logs. It does not replace or mix with the MySQL databases you manage.
 
-## Directory structure
+## Project Structure
 
 ```text
 backend/
-  main.go                  Wails desktop entrypoint
-  wails.json               Wails build configuration
   cmd/api/                 Browser/API entrypoint
-  desktop/assets/          Generated Nuxt assets embedded by Wails
-  internal/                API, config, DB providers, models, repository, AI, middleware
+  internal/                API, config, providers, repository, AI, and middleware
   migrations/              SQLite application migrations
+  main.go                  Wails desktop entrypoint
+  wails.json               Desktop app configuration
+
 frontend/
-  app/
-    components/ pages/ stores/ types/ composables/ assets/ layouts/
-  public/branding/         Browser and desktop branding assets
-banner.png                 README banner
-docker-compose.yml         Browser stack
+  app/components/          Workspace, SQL editor, data grid, AI, settings, and tree
+  app/pages/               Main screen
+  app/stores/              Workspace state
+  app/utils/               DBeaver import and result export helpers
+  public/branding/         Brand icons and assets
+
+docker-compose.yml         Web stack with frontend and backend
 Makefile                   Common development commands
+banner.png                 README banner
 ```
 
 ## Run with Docker
 
-Requirements: Docker, Docker Compose, and a reachable MySQL server to manage.
+Requirements: Docker, Docker Compose, and a reachable MySQL server.
 
 ```bash
 cp .env.example .env
-# Set ENCRYPTION_KEY in .env to a long random value before using real credentials.
+# Set ENCRYPTION_KEY in .env before storing real credentials.
 docker compose up --build
 ```
 
 Open [http://localhost:3000](http://localhost:3000). The API health endpoint is available at [http://localhost:8080/health](http://localhost:8080/health).
 
-Docker Compose starts only DBfock's frontend and backend. Configure a connection to your own reachable MySQL server inside DBfock.
+Docker Compose starts DBfock only. Add a connection inside the UI for the MySQL server you want to manage.
 
-## Run locally in the browser
+## Run Locally
 
-Requirements: Go 1.24+, Node.js 24+, npm, and access to a MySQL server to manage.
+Requirements: Go 1.24+, Node.js 24+, npm, and a reachable MySQL server.
 
 ```bash
 cp .env.example .env
@@ -82,116 +140,67 @@ cd frontend && npm install && npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Desktop app
+## Desktop App
 
-Requirements: the local backend and frontend prerequisites. The Makefile downloads and runs the pinned Wails v2 CLI automatically.
+For live-reload desktop development:
 
 ```bash
 make dev-desktop
 ```
 
-`make dev-desktop` opens DBfock with live reload. It starts the local API at `127.0.0.1:8080` and stores desktop data independently from the browser development database.
-
-Build a distributable app with:
+To build the app:
 
 ```bash
 make build-desktop
 ```
 
-On macOS, the generated app is written under `backend/build/bin/` and can be opened from Finder or the terminal. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
+On macOS, the generated app is written under `backend/build/bin/`. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
 
-## Release
+## First Steps
 
-GitHub Actions builds desktop binaries automatically when a version tag is pushed.
+1. Click **Create connection**.
+2. Enter host, port, username, password, initial database, and environment.
+3. Use **Test connection** before saving.
+4. Connect, expand the sidebar tree, and open a table.
+5. Use **New SQL query** to execute statements.
+6. Save recurring SQL or create Smart Queries from filtered SELECT statements.
+7. Configure AI in **Settings -> AI agent** to explain, improve, and generate SQL with schema context.
 
-```bash
-git add README.md banner.png .github backend/wails.json
-git commit -m "Prepare release v0.5.0"
-git tag -a v0.5.0 -m "v0.5.0"
-git push origin main
-git push origin v0.5.0
-```
-
-The `Release` workflow builds and attaches:
-
-- `DBfock-v0.5.0-macOS.zip`
-- `DBfock-v0.5.0-Windows.zip`
-- `DBfock-v0.5.0-Linux.tar.gz`
-
-## Useful commands
+## Useful Commands
 
 | Command | Description |
 | --- | --- |
-| `make dev-backend` | Start only the Go API for browser development. |
-| `make dev-frontend` | Start only the Nuxt development server. |
-| `make dev-desktop` | Start DBfock through Wails with live reload. |
+| `make dev-backend` | Start only the Go API. |
+| `make dev-frontend` | Start only the Nuxt app. |
+| `make dev-desktop` | Open the Wails app with live reload. |
 | `make test` | Run the Go test suite. |
-| `make typecheck` | Run the Nuxt/TypeScript checks. |
-| `make build` | Build the browser API and frontend. |
-| `make build-desktop` | Generate the native Wails application. |
-| `make docker-up` | Build and start the web stack with Docker Compose. |
+| `make typecheck` | Run Nuxt/TypeScript checks. |
+| `make build` | Build the web API and frontend. |
+| `make build-desktop` | Build the native desktop app. |
+| `make docker-up` | Start the web stack with Docker Compose. |
 
-## First query
-
-1. Choose **Create connection**, complete the MySQL form, and use **Test connection**.
-2. Save it, then connect and expand the connection in the left tree.
-3. Double-click a table to open its paginated data grid, or select **New SQL query**.
-4. Run a query with the Run button or `Ctrl/Cmd + Enter`.
-5. Save useful SQL from the editor, or create a smart query from a selected statement.
-
-## AI setup
-
-Open **Settings -> AI** and choose a provider:
-
-- OpenAI
-- OpenRouter
-- Anthropic
-- Ollama
-
-DBfock stores AI provider settings in the local application database. API keys are encrypted with the same `ENCRYPTION_KEY` used for connection passwords. AI requests can include schema context, selected editor SQL, and selected database/table scope. Audit logs are available from **Settings -> Audit**.
-
-## Security decisions
-
-- Stored connection passwords and AI API keys are encrypted with AES-GCM. `ENCRYPTION_KEY` is required before storing real secrets.
-- Password values are not returned in API responses, exported connection files, or logs.
-- Connection records, AI settings, audit logs, and query history are scoped to the local MVP user. Do not expose DBfock to untrusted multi-user networks before real authentication/session enforcement is added.
-- Object identifiers for schema navigation are allow-listed before SQL interpolation. Values used for paging are parameterized.
-- Queries use context timeouts and can be cancelled by request id. Payload size, result row count, concurrent query count, and MySQL pool sizes are bounded.
-- CORS is allow-listed, API requests are rate-limited, and errors are consistently shaped.
-
-## API highlights
+## API Highlights
 
 - `GET /health`
-- `GET /api/auth/me`
 - `GET|POST /api/connections`
 - `GET|PUT|DELETE /api/connections/:id`
 - `POST /api/connections/test`
 - `GET /api/connections/export`
 - `POST /api/connections/import`
 - `POST /api/connections/:id/connect`
-- `POST /api/connections/:id/disconnect`
-- `GET /api/connections/:id/stats`
-- `GET /api/connections/:id/metadata/:section`
 - `GET /api/connections/:id/databases`
 - `GET /api/connections/:id/databases/:database/tables`
-- `GET /api/connections/:id/databases/:database/views`
 - `GET /api/connections/:id/databases/:database/tables/:table/structure`
 - `GET /api/connections/:id/databases/:database/tables/:table/data`
 - `POST /api/connections/:id/query`
 - `POST /api/connections/:id/query/cancel`
-- `GET /api/connections/:id/transaction`
-- `POST /api/connections/:id/transaction/commit`
-- `POST /api/connections/:id/transaction/rollback`
-- `GET /api/query-history`
-- `DELETE /api/query-history/:id`
 - `GET|PUT /api/ai/settings`
 - `POST /api/ai/models`
-- `POST /api/ai/chat`
 - `POST /api/ai/chat/jobs`
 - `GET /api/ai/chat/jobs/:id`
 - `POST /api/ai/smart-queries`
 - `GET /api/ai/audit-logs`
 
-## Current limitations
+## License
 
-DBfock is MySQL-only today. Browser development creates a local MVP user instead of enforcing full authentication. Inline record editing, DDL builders, richer object-type navigation, persisted server-side saved query storage, and additional database providers are planned extensions. Multi-statement SQL should be used one statement at a time in this release.
+DBfock is released under the [MIT License](./LICENSE).

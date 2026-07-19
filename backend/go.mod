@@ -3,7 +3,7 @@ module github.com/dbfock/database-manager/backend
 go 1.24.0
 
 require (
-	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/wailsapp/wails/v2 v2.10.1
 	modernc.org/sqlite v1.38.2

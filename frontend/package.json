@@ -1,0 +1,33 @@
+{
+  "name": "dbfock-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "typecheck": "nuxt prepare && nuxt typecheck",
+    "dev:wails": "NUXT_PUBLIC_API_BASE=http://127.0.0.1:8080/api nuxt dev --host 127.0.0.1 --port 1420",
+    "generate:wails": "NUXT_PUBLIC_API_BASE=http://127.0.0.1:8080/api nuxt generate && sh scripts/copy-wails-assets.sh",
+    "dev:desktop": "cd ../backend && wails dev",
+    "build:desktop": "cd ../backend && wails build"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.6",
+    "@lezer/highlight": "^1.2.3",
+    "@nuxtjs/tailwindcss": "6.14.0",
+    "@pinia/nuxt": "1.0.1",
+    "nuxt": "4.4.8",
+    "pinia": "^4.0.2",
+    "vue": "^3.5.24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^6.0.3",
+    "vue-tsc": "^3.3.7"
+  }
+}

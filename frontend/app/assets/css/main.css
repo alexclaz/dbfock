@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root, :root[data-theme='github-light'] {
+  --canvas: 255 255 255; --panel: 246 248 250; --line: 208 215 222; --ink: 31 35 40; --muted: 89 99 110; --accent: 9 105 218;
+  --editor-canvas: 255 255 255; --editor-panel: 246 248 250; --editor-line: 208 215 222; --editor-ink: 31 35 40; --editor-muted: 101 109 118; --editor-active: 221 234 255; --editor-selection: 84 174 255 / 0.27; --editor-tooltip: 255 255 255;
+  --syntax-key: 130 80 223; --syntax-string: 15 123 66; --syntax-number: 5 80 174; --syntax-boolean: 207 34 46; --syntax-null: 101 109 118; --syntax-comment: 101 109 118; --syntax-operator: 130 80 223;
+}
+:root[data-theme='github-dark'] {
+  --canvas: 13 17 23; --panel: 22 27 34; --line: 48 54 61; --ink: 230 237 243; --muted: 139 148 158; --accent: 47 129 247;
+  --editor-canvas: 13 17 23; --editor-panel: 22 27 34; --editor-line: 48 54 61; --editor-ink: 230 237 243; --editor-muted: 139 148 158; --editor-active: 22 53 91; --editor-selection: 38 97 173 / 0.51; --editor-tooltip: 22 27 34;
+  --syntax-key: 210 168 255; --syntax-string: 126 231 135; --syntax-number: 121 192 255; --syntax-boolean: 255 123 114; --syntax-null: 139 148 158; --syntax-comment: 139 148 158; --syntax-operator: 210 168 255;
+}
+:root[data-theme='one-dark'] {
+  --canvas: 33 37 43; --panel: 40 44 52; --line: 62 68 81; --ink: 171 178 191; --muted: 125 133 147; --accent: 97 175 239;
+  --editor-canvas: 40 44 52; --editor-panel: 33 37 43; --editor-line: 62 68 81; --editor-ink: 171 178 191; --editor-muted: 125 133 147; --editor-active: 45 50 60; --editor-selection: 62 68 81 / 0.86; --editor-tooltip: 33 37 43;
+  --syntax-key: 198 120 221; --syntax-string: 152 195 121; --syntax-number: 209 154 102; --syntax-boolean: 224 108 117; --syntax-null: 125 133 147; --syntax-comment: 92 99 112; --syntax-operator: 86 182 194;
+}
+:root[data-theme='dracula'] {
+  --canvas: 40 42 54; --panel: 52 55 72; --line: 68 71 90; --ink: 248 248 242; --muted: 189 147 249; --accent: 189 147 249;
+  --editor-canvas: 40 42 54; --editor-panel: 52 55 72; --editor-line: 68 71 90; --editor-ink: 248 248 242; --editor-muted: 98 114 164; --editor-active: 68 71 90; --editor-selection: 68 71 90 / 0.9; --editor-tooltip: 52 55 72;
+  --syntax-key: 189 147 249; --syntax-string: 80 250 123; --syntax-number: 255 184 108; --syntax-boolean: 255 121 198; --syntax-null: 98 114 164; --syntax-comment: 98 114 164; --syntax-operator: 139 233 253;
+}
+:root[data-theme='cobalt2'] {
+  --canvas: 25 53 73; --panel: 29 59 81; --line: 49 90 114; --ink: 255 255 255; --muted: 128 213 255; --accent: 0 136 255;
+  --editor-canvas: 25 53 73; --editor-panel: 29 59 81; --editor-line: 49 90 114; --editor-ink: 255 255 255; --editor-muted: 0 136 255; --editor-active: 32 72 98; --editor-selection: 255 255 255 / 0.15; --editor-tooltip: 29 59 81;
+  --syntax-key: 255 198 0; --syntax-string: 58 217 0; --syntax-number: 255 98 140; --syntax-boolean: 255 198 0; --syntax-null: 0 136 255; --syntax-comment: 0 136 255; --syntax-operator: 128 252 255;
+}
+:root[data-theme='claude-code'] {
+  --canvas: 28 27 26; --panel: 39 37 34; --line: 70 66 61; --ink: 244 240 230; --muted: 180 171 157; --accent: 217 119 87;
+  --editor-canvas: 28 27 26; --editor-panel: 39 37 34; --editor-line: 70 66 61; --editor-ink: 244 240 230; --editor-muted: 180 171 157; --editor-active: 55 49 43; --editor-selection: 120 93 72 / 0.52; --editor-tooltip: 45 42 38;
+  --syntax-key: 229 151 107; --syntax-string: 167 201 147; --syntax-number: 214 176 110; --syntax-boolean: 222 122 122; --syntax-null: 180 171 157; --syntax-comment: 142 133 121; --syntax-operator: 216 178 120;
+}
+:root[data-theme='codex'] {
+  --canvas: 17 17 17; --panel: 26 26 26; --line: 48 48 48; --ink: 236 236 236; --muted: 163 163 163; --accent: 16 163 127;
+  --editor-canvas: 17 17 17; --editor-panel: 26 26 26; --editor-line: 48 48 48; --editor-ink: 236 236 236; --editor-muted: 145 145 145; --editor-active: 38 38 38; --editor-selection: 16 163 127 / 0.28; --editor-tooltip: 32 32 32;
+  --syntax-key: 94 234 212; --syntax-string: 134 239 172; --syntax-number: 253 224 71; --syntax-boolean: 94 234 212; --syntax-null: 163 163 163; --syntax-comment: 115 115 115; --syntax-operator: 236 236 236;
+}
+:root[data-theme='monokai'] {
+  --canvas: 39 40 34; --panel: 62 61 50; --line: 73 72 61; --ink: 248 248 242; --muted: 174 174 164; --accent: 166 226 46;
+  --editor-canvas: 39 40 34; --editor-panel: 62 61 50; --editor-line: 73 72 61; --editor-ink: 248 248 242; --editor-muted: 117 113 94; --editor-active: 62 61 50; --editor-selection: 73 72 61 / 0.9; --editor-tooltip: 62 61 50;
+  --syntax-key: 249 38 114; --syntax-string: 230 219 116; --syntax-number: 174 129 255; --syntax-boolean: 174 129 255; --syntax-null: 174 174 164; --syntax-comment: 117 113 94; --syntax-operator: 102 217 239;
+}
+:root[data-theme='vscode-light'] {
+  --canvas: 255 255 255; --panel: 243 243 243; --line: 231 231 231; --ink: 30 30 30; --muted: 97 97 97; --accent: 0 120 212;
+  --editor-canvas: 255 255 255; --editor-panel: 243 243 243; --editor-line: 231 231 231; --editor-ink: 30 30 30; --editor-muted: 35 35 35; --editor-active: 232 232 232; --editor-selection: 173 214 255 / 0.64; --editor-tooltip: 255 255 255;
+  --syntax-key: 0 0 255; --syntax-string: 163 21 21; --syntax-number: 9 134 88; --syntax-boolean: 0 0 255; --syntax-null: 128 0 128; --syntax-comment: 0 128 0; --syntax-operator: 0 0 0;
+}
+:root[data-theme='vscode-dark'] {
+  --canvas: 30 30 30; --panel: 37 37 38; --line: 62 62 66; --ink: 212 212 212; --muted: 133 133 133; --accent: 0 122 204;
+  --editor-canvas: 30 30 30; --editor-panel: 37 37 38; --editor-line: 62 62 66; --editor-ink: 212 212 212; --editor-muted: 133 133 133; --editor-active: 42 45 46; --editor-selection: 38 79 120 / 0.9; --editor-tooltip: 37 37 38;
+  --syntax-key: 86 156 214; --syntax-string: 206 145 120; --syntax-number: 181 206 168; --syntax-boolean: 86 156 214; --syntax-null: 86 156 214; --syntax-comment: 106 153 85; --syntax-operator: 212 212 212;
+}
+html, body, #__nuxt { min-height: 100%; }
+body { @apply bg-canvas text-ink antialiased; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+button, input, textarea, select { font: inherit; }
+button { @apply transition-colors; }
+.focus-ring { @apply focus:outline-none focus:ring-2 focus:ring-accent/50; }
+.scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }.scrollbar::-webkit-scrollbar-thumb { @apply rounded-full bg-muted/30; }

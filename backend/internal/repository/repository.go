@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/dbfock/database-manager/backend/internal/models"
@@ -307,6 +308,113 @@ func (r *Repository) SaveAISetting(ctx context.Context, s models.AISetting) erro
 	s.UpdatedAt = time.Now().UTC()
 	_, err := r.db.ExecContext(ctx, `INSERT INTO ai_settings (user_id,provider,model,base_url,api_key_encrypted,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET provider=excluded.provider,model=excluded.model,base_url=excluded.base_url,api_key_encrypted=excluded.api_key_encrypted,updated_at=excluded.updated_at`, s.UserID, s.Provider, s.Model, s.BaseURL, s.APIKeyEncrypted, s.UpdatedAt)
 	return err
+}
+
+func (r *Repository) GetBackupSetting(ctx context.Context, userID string) (models.BackupSetting, error) {
+	var s models.BackupSetting
+	err := r.db.QueryRowContext(ctx, `SELECT user_id,endpoint,bucket,region,access_key_encrypted,secret_encrypted,updated_at FROM backup_settings WHERE user_id=?`, userID).Scan(&s.UserID, &s.Endpoint, &s.Bucket, &s.Region, &s.AccessKeyEncrypted, &s.SecretEncrypted, &s.UpdatedAt)
+	return s, err
+}
+
+func (r *Repository) SaveBackupSetting(ctx context.Context, s models.BackupSetting) error {
+	s.UserID = LocalUserID
+	s.UpdatedAt = time.Now().UTC()
+	_, err := r.db.ExecContext(ctx, `INSERT INTO backup_settings (user_id,endpoint,bucket,region,access_key_encrypted,secret_encrypted,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET endpoint=excluded.endpoint,bucket=excluded.bucket,region=excluded.region,access_key_encrypted=excluded.access_key_encrypted,secret_encrypted=excluded.secret_encrypted,updated_at=excluded.updated_at`, s.UserID, s.Endpoint, s.Bucket, s.Region, s.AccessKeyEncrypted, s.SecretEncrypted, s.UpdatedAt)
+	return err
+}
+
+// DumpSQL serializes all workspace data as portable SQLite INSERT statements.
+// Backup settings are deliberately excluded, so a restored backup cannot
+// replace the S3 credentials currently being used to retrieve it.
+func (r *Repository) DumpSQL(ctx context.Context) (string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('schema_migrations', 'backup_settings') ORDER BY name`)
+	if err != nil {
+		return "", err
+	}
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return "", err
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return "", err
+	}
+	rows.Close()
+
+	var out strings.Builder
+	out.WriteString("-- DBfock workspace backup\nBEGIN;\nPRAGMA defer_foreign_keys = ON;\n")
+	for _, table := range tables {
+		fmt.Fprintf(&out, "DELETE FROM %s;\n", quoteIdentifier(table))
+	}
+	for _, table := range tables {
+		data, err := r.db.QueryContext(ctx, "SELECT * FROM "+quoteIdentifier(table))
+		if err != nil {
+			return "", err
+		}
+		columns, err := data.Columns()
+		if err != nil {
+			data.Close()
+			return "", err
+		}
+		quotedColumns := make([]string, len(columns))
+		for i, column := range columns {
+			quotedColumns[i] = quoteIdentifier(column)
+		}
+		for data.Next() {
+			values := make([]any, len(columns))
+			pointers := make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := data.Scan(pointers...); err != nil {
+				data.Close()
+				return "", err
+			}
+			encoded := make([]string, len(values))
+			for i, value := range values {
+				encoded[i] = quoteSQLValue(value)
+			}
+			fmt.Fprintf(&out, "INSERT INTO %s (%s) VALUES (%s);\n", quoteIdentifier(table), strings.Join(quotedColumns, ","), strings.Join(encoded, ","))
+		}
+		if err := data.Err(); err != nil {
+			data.Close()
+			return "", err
+		}
+		data.Close()
+	}
+	out.WriteString("COMMIT;\n")
+	return out.String(), nil
+}
+
+func (r *Repository) RestoreSQL(ctx context.Context, script string) error {
+	if !strings.HasPrefix(strings.TrimSpace(script), "-- DBfock workspace backup") || !strings.Contains(script, "BEGIN;") || !strings.Contains(script, "COMMIT;") {
+		return fmt.Errorf("invalid DBfock backup file")
+	}
+	_, err := r.db.ExecContext(ctx, script)
+	return err
+}
+
+func quoteIdentifier(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
+func quoteSQLValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return "NULL"
+	case []byte:
+		return "X'" + fmt.Sprintf("%x", v) + "'"
+	case time.Time:
+		return "'" + strings.ReplaceAll(v.UTC().Format(time.RFC3339Nano), "'", "''") + "'"
+	case bool:
+		if v {
+			return "1"
+		}
+		return "0"
+	default:
+		return "'" + strings.ReplaceAll(fmt.Sprint(v), "'", "''") + "'"
+	}
 }
 
 func (r *Repository) AddAIAuditLog(ctx context.Context, log models.AIAuditLog) error {

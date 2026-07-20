@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dbfock/database-manager/backend/internal/ai"
+	"github.com/dbfock/database-manager/backend/internal/backup"
 	"github.com/dbfock/database-manager/backend/internal/config"
 	"github.com/dbfock/database-manager/backend/internal/connections"
 	"github.com/dbfock/database-manager/backend/internal/database"
@@ -45,7 +46,7 @@ func main() {
 	providers := database.NewRegistry()
 	providers.Register("mysql", mysqlprovider.New(cfg.MaxOpenConnections))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	api := httpapi.New(cfg, connections.New(repo, cipher, providers), providers, repo, ai.New(repo, cipher), logger)
+	api := httpapi.New(cfg, connections.New(repo, cipher, providers), providers, repo, ai.New(repo, cipher), backup.New(repo, cipher), logger)
 	handler := middleware.RateLimit(120, time.Minute)(middleware.CORS(cfg.CORSAllowedOrigins)(api.Router()))
 	server := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: http.MaxBytesHandler(handler, cfg.MaxRequestBodyBytes), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Connection, SavedQuery, SmartQuery, WorkspaceTab } from '~/types/database'
 
-type SettingsSection = 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit'
+type SettingsSection = 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup'
 type Command = {
   id: string
   label: string
@@ -69,6 +69,7 @@ const commands = computed<Command[]>(() => [
   { id: 'settings-connections', label: t('settings.connections'), description: t('search.manageConnections'), group: t('search.settings'), icon: '⇅', keywords: 'conexões connections exportar importar export import backup', run: () => emit('openSettings', 'connections') },
   { id: 'settings-ai', label: t('settings.aiAgent'), description: t('search.configureAi'), group: t('search.settings'), icon: '✦', keywords: 'ai ia openai anthropic ollama modelo api', run: () => emit('openSettings', 'ai') },
   { id: 'settings-ai-audit', label: t('settings.aiAudit'), description: t('search.openAiAudit'), group: t('search.settings'), icon: '▤', keywords: 'ai ia audit auditoria logs prompt resposta response', run: () => emit('openSettings', 'audit') },
+  { id: 'settings-backup', label: t('settings.backup'), description: t('search.manageBackup'), group: t('search.settings'), icon: '☁', keywords: 'backup s3 bucket restore restaurar sql', run: () => emit('openSettings', 'backup') },
 ])
 
 const filteredCommands = computed(() => {

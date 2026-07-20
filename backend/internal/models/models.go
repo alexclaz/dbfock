@@ -171,6 +171,21 @@ type AISettingResponse struct {
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
+type BackupSetting struct {
+	UserID, Endpoint, Bucket, Region, AccessKeyEncrypted, SecretEncrypted string
+	UpdatedAt                                                             time.Time
+}
+
+type BackupSettingResponse struct {
+	Configured   bool      `json:"configured"`
+	Endpoint     string    `json:"endpoint"`
+	Bucket       string    `json:"bucket"`
+	Region       string    `json:"region"`
+	HasAccessKey bool      `json:"hasAccessKey"`
+	HasSecret    bool      `json:"hasSecret"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
 type AIAuditLog struct {
 	ID        string    `json:"id"`
 	RunID     string    `json:"runId"`
@@ -209,4 +224,8 @@ type SmartQueryParam struct {
 
 func (s AISetting) Public() AISettingResponse {
 	return AISettingResponse{Configured: true, Provider: s.Provider, Model: s.Model, BaseURL: s.BaseURL, HasAPIKey: s.APIKeyEncrypted != "", UpdatedAt: s.UpdatedAt}
+}
+
+func (s BackupSetting) Public() BackupSettingResponse {
+	return BackupSettingResponse{Configured: true, Endpoint: s.Endpoint, Bucket: s.Bucket, Region: s.Region, HasAccessKey: s.AccessKeyEncrypted != "", HasSecret: s.SecretEncrypted != "", UpdatedAt: s.UpdatedAt}
 }

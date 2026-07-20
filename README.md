@@ -68,6 +68,7 @@ DBfock is currently distributed without Apple Developer ID notarization. If you 
 ### Operations and Security
 
 - Connection passwords and API keys are encrypted with AES-GCM.
+- S3-compatible workspace backup and restore: the complete local workspace is written as `dbfock/backup.sql`; S3 credentials stay encrypted locally and are never included in that file.
 - Password values are not returned in API responses, exports, or logs.
 - Schema identifiers are validated before SQL interpolation.
 - Pagination values are parameterized.
@@ -221,6 +222,9 @@ Then open DBfock again. If you kept the app somewhere else, replace `/Applicatio
 - `GET /api/ai/chat/jobs/:id`
 - `POST /api/ai/smart-queries`
 - `GET /api/ai/audit-logs`
+- `GET|PUT /api/backup/settings`
+- `POST /api/backup/create`
+- `POST /api/backup/restore`
 
 ## License
 

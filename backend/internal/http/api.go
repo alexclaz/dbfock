@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dbfock/database-manager/backend/internal/ai"
+	"github.com/dbfock/database-manager/backend/internal/backup"
 	"github.com/dbfock/database-manager/backend/internal/config"
 	"github.com/dbfock/database-manager/backend/internal/connections"
 	"github.com/dbfock/database-manager/backend/internal/database"
@@ -35,12 +36,13 @@ type API struct {
 	cancelMu    sync.Mutex
 	querySlots  chan struct{}
 	ai          *ai.Service
+	backup      *backup.Service
 }
 
 var errDatabaseNotConnected = errors.New("connect to the database before running queries")
 
-func New(cfg config.Config, cs *connections.Service, providers *database.Registry, repo *repository.Repository, aiService *ai.Service, logger *slog.Logger) *API {
-	return &API{config: cfg, connections: cs, providers: providers, repo: repo, ai: aiService, log: logger, sessions: map[string]bool{}, cancels: map[string]context.CancelFunc{}, querySlots: make(chan struct{}, cfg.MaxConcurrentQueries)}
+func New(cfg config.Config, cs *connections.Service, providers *database.Registry, repo *repository.Repository, aiService *ai.Service, backupService *backup.Service, logger *slog.Logger) *API {
+	return &API{config: cfg, connections: cs, providers: providers, repo: repo, ai: aiService, backup: backupService, log: logger, sessions: map[string]bool{}, cancels: map[string]context.CancelFunc{}, querySlots: make(chan struct{}, cfg.MaxConcurrentQueries)}
 }
 func (a *API) Router() http.Handler {
 	r := chi.NewRouter()
@@ -53,6 +55,10 @@ func (a *API) Router() http.Handler {
 		r.Put("/ai/settings", a.saveAISettings)
 		r.Post("/ai/models", a.listAIModels)
 		r.Get("/ai/audit-logs", a.listAIAuditLogs)
+		r.Get("/backup/settings", a.getBackupSettings)
+		r.Put("/backup/settings", a.saveBackupSettings)
+		r.Post("/backup/create", a.createBackup)
+		r.Post("/backup/restore", a.restoreBackup)
 		r.Post("/ai/chat", a.aiChat)
 		r.Post("/ai/smart-queries", a.createSmartQuery)
 		r.Post("/ai/chat/jobs", a.createAIChatJob)
@@ -605,6 +611,57 @@ func (a *API) listAIAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, logs)
+}
+
+type backupSettingsRequest struct {
+	Endpoint  string `json:"endpoint"`
+	Bucket    string `json:"bucket"`
+	Region    string `json:"region"`
+	AccessKey string `json:"accessKey"`
+	Secret    string `json:"secret"`
+}
+
+func (a *API) getBackupSettings(w http.ResponseWriter, r *http.Request) {
+	s, err := a.backup.Get(r.Context())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respond(w, http.StatusOK, map[string]any{"configured": false})
+			return
+		}
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, s.Public())
+}
+func (a *API) saveBackupSettings(w http.ResponseWriter, r *http.Request) {
+	var in backupSettingsRequest
+	if err := decode(w, r, &in); err != nil {
+		return
+	}
+	s, err := a.backup.Save(r.Context(), in.Endpoint, in.Bucket, in.Region, in.AccessKey, in.Secret)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, s.Public())
+}
+func (a *API) createBackup(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	if err := a.backup.Create(ctx); err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]bool{"backedUp": true})
+}
+func (a *API) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	if err := a.backup.Restore(ctx); err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]bool{"restored": true})
 }
 func (a *API) listAIModels(w http.ResponseWriter, r *http.Request) {
 	var in aiSettingsRequest

@@ -4,11 +4,12 @@ import { DBeaverNoMySQLConnectionsError, parseDBeaverProject, type DBeaverMySQLC
 
 type Provider = 'openai' | 'openrouter' | 'anthropic' | 'ollama'
 type ThemePreference = 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'codex' | 'monokai' | 'vscode-light' | 'vscode-dark'
-type SettingsSection = 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'about'
+type SettingsSection = 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup' | 'about'
 type ProviderOption = { value: Provider; label: string; defaultModel: string; baseUrl: string; apiKeyHint: string }
 type AISettings = { configured: boolean; provider?: Provider; model?: string; baseUrl?: string; hasApiKey?: boolean }
 type AIAuditLog = { id: string; runId: string; question: string; stage: string; provider: string; model: string; request: string; response: string; error: string; createdAt: string }
 type AIAuditRun = { id: string; question: string; createdAt: string; logs: AIAuditLog[] }
+type BackupSettings = { configured: boolean; endpoint?: string; bucket?: string; region?: string; hasAccessKey?: boolean; hasSecret?: boolean }
 type ConnectionExport = { version: number; connections: unknown[] }
 type ConnectionImportResult = { imported: number }
 type ConnectionImport = { name: string; driver: 'mysql'; host: string; port: number; username: string; initialDatabase: string; color: string; environment: 'development'; sslEnabled: boolean; timeoutSeconds: number }
@@ -67,6 +68,14 @@ const auditLogs = ref<AIAuditLog[]>([])
 const loadingAudit = ref(false)
 const auditError = ref('')
 const expandedAuditRuns = reactive(new Set<string>())
+const backupForm = reactive({ endpoint: '', bucket: '', region: '', accessKey: '', secret: '' })
+const hasSavedBackupAccessKey = ref(false)
+const hasSavedBackupSecret = ref(false)
+const backupError = ref('')
+const backupSuccess = ref('')
+const savingBackup = ref(false)
+const runningBackup = ref(false)
+const restoringBackup = ref(false)
 const importInput = ref<HTMLInputElement>()
 const dbeaverImportInput = ref<HTMLInputElement>()
 const connectionTransferError = ref('')
@@ -122,7 +131,35 @@ async function loadAuditLogs() {
   catch (cause: any) { auditError.value = cause.message || t('audit.loadError') }
   finally { loadingAudit.value = false }
 }
-function selectSection(section: SettingsSection) { activeSection.value = section; if (section === 'audit') loadAuditLogs() }
+async function loadBackupSettings() {
+  backupError.value = ''
+  try {
+    const settings = await api<BackupSettings>('/backup/settings')
+    if (!settings.configured) return
+    backupForm.endpoint = settings.endpoint || ''; backupForm.bucket = settings.bucket || ''; backupForm.region = settings.region || ''; backupForm.accessKey = ''; backupForm.secret = ''
+    hasSavedBackupAccessKey.value = Boolean(settings.hasAccessKey); hasSavedBackupSecret.value = Boolean(settings.hasSecret)
+  } catch (cause: any) { backupError.value = cause.message || t('backup.loadError') }
+}
+async function saveBackupSettings() {
+  backupError.value = ''; backupSuccess.value = ''; savingBackup.value = true
+  try { await api('/backup/settings', { method: 'PUT', body: backupForm }); await loadBackupSettings(); backupSuccess.value = t('backup.saved') }
+  catch (cause: any) { backupError.value = cause.message || t('backup.saveError') }
+  finally { savingBackup.value = false }
+}
+async function createBackup() {
+  backupError.value = ''; backupSuccess.value = ''; runningBackup.value = true
+  try { await api('/backup/create', { method: 'POST' }); backupSuccess.value = t('backup.created') }
+  catch (cause: any) { backupError.value = cause.message || t('backup.createError') }
+  finally { runningBackup.value = false }
+}
+async function restoreBackup() {
+  if (!window.confirm(t('backup.restoreConfirm'))) return
+  backupError.value = ''; backupSuccess.value = ''; restoringBackup.value = true
+  try { await api('/backup/restore', { method: 'POST' }); await workspace.refreshConnections(); backupSuccess.value = t('backup.restored') }
+  catch (cause: any) { backupError.value = cause.message || t('backup.restoreError') }
+  finally { restoringBackup.value = false }
+}
+function selectSection(section: SettingsSection) { activeSection.value = section; if (section === 'audit') loadAuditLogs(); if (section === 'backup') loadBackupSettings() }
 function formatDate(value: string) { return new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function stageLabel(stage: string) { return t(`audit.stage.${stage}`) }
 function toggleAuditRun(runId: string) { if (expandedAuditRuns.has(runId)) expandedAuditRuns.delete(runId); else expandedAuditRuns.add(runId) }
@@ -181,7 +218,7 @@ async function importDBeaverConnections() {
   finally { importingDBeaverConnections.value = false }
 }
 
-onMounted(() => { loadSettings(); if (activeSection.value === 'audit') loadAuditLogs() })
+onMounted(() => { loadSettings(); if (activeSection.value === 'audit') loadAuditLogs(); if (activeSection.value === 'backup') loadBackupSettings() })
 onUnmounted(() => { if (loadTimer) clearTimeout(loadTimer) })
 watch(() => props.section, (section) => { if (section) selectSection(section) })
 watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
@@ -198,6 +235,7 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
           <button type="button" class="settings-nav" :class="activeSection === 'connections' ? 'settings-nav-active' : ''" @click="selectSection('connections')">⇅ {{ t('settings.connections') }}</button>
           <button type="button" class="settings-nav" :class="activeSection === 'ai' ? 'settings-nav-active' : ''" @click="selectSection('ai')">✦ {{ t('settings.aiAgent') }}</button>
           <button type="button" class="settings-nav" :class="activeSection === 'audit' ? 'settings-nav-active' : ''" @click="selectSection('audit')">▤ {{ t('settings.aiAudit') }}</button>
+          <button type="button" class="settings-nav" :class="activeSection === 'backup' ? 'settings-nav-active' : ''" @click="selectSection('backup')">☁ {{ t('settings.backup') }}</button>
           <button type="button" class="settings-nav" :class="activeSection === 'about' ? 'settings-nav-active' : ''" @click="selectSection('about')">ⓘ {{ t('settings.about') }}</button>
         </nav>
 
@@ -209,6 +247,8 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
           <div v-else-if="activeSection === 'connections'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('settings.connections') }}</h3><p class="mt-1 text-sm text-muted">{{ t('connections.description') }}</p><div class="mt-6 rounded-lg border border-line bg-panel p-4"><h4 class="text-sm font-medium">{{ t('connections.export') }}</h4><p class="mt-1 text-sm text-muted">{{ t('connections.exportDescription') }}</p><button type="button" class="mt-4 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas" @click="exportConnections">{{ t('connections.export') }}</button></div><div class="mt-4 rounded-lg border border-line bg-panel p-4"><h4 class="text-sm font-medium">{{ t('connections.import') }}</h4><p class="mt-1 text-sm text-muted">{{ t('connections.importDescription') }}</p><p class="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">{{ t('connections.passwordNotice') }}</p><input ref="importInput" class="sr-only" type="file" accept="application/json,.json" @change="importConnections" /><button type="button" class="mt-4 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="importingConnections" @click="chooseConnectionImport">{{ importingConnections ? t('connections.importing') : t('connections.import') }}</button></div><div class="mt-4 rounded-lg border border-line bg-panel p-4"><h4 class="text-sm font-medium">{{ t('connections.dbeaverImport') }}</h4><p class="mt-1 text-sm text-muted">{{ t('connections.dbeaverDescription') }}</p><details class="mt-3 rounded-md bg-canvas px-3 py-2 text-sm text-muted"><summary class="cursor-pointer font-medium text-ink">{{ t('connections.dbeaverHowToExport') }}</summary><ol class="mt-2 list-decimal space-y-1 pl-5"><li>{{ t('connections.dbeaverExportStep1') }}</li><li>{{ t('connections.dbeaverExportStep2') }}</li><li>{{ t('connections.dbeaverExportStep3') }}</li></ol></details><p class="mt-3 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">{{ t('connections.passwordNotice') }}</p><input ref="dbeaverImportInput" class="sr-only" type="file" accept=".dbp,application/zip,application/x-zip-compressed" @change="readDBeaverProject" /><button type="button" class="mt-4 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="parsingDBeaverProject || importingDBeaverConnections" @click="chooseDBeaverImport">{{ parsingDBeaverProject ? t('connections.dbeaverReading') : t('connections.dbeaverChooseFile') }}</button><div v-if="dbeaverConnections.length" class="mt-4 rounded-md border border-line bg-canvas p-3"><p class="text-sm font-medium">{{ t('connections.dbeaverFound', { count: dbeaverConnections.length }) }}</p><p class="mt-1 text-xs text-muted">{{ t('connections.dbeaverOnlyMySQL') }}</p><label v-if="dbeaverConnectionsWithoutUsername.length" class="mt-3 grid gap-1.5 text-sm font-medium">{{ t('connections.dbeaverDefaultUsername') }}<input v-model="dbeaverDefaultUsername" class="field" autocomplete="username" /><span class="text-xs font-normal text-muted">{{ t('connections.dbeaverDefaultUsernameDescription', { count: dbeaverConnectionsWithoutUsername.length }) }}</span></label><ul class="mt-3 max-h-32 divide-y divide-line overflow-auto rounded border border-line text-sm"><li v-for="connection in dbeaverConnections" :key="`${connection.name}-${connection.host}-${connection.port}`" class="flex items-center justify-between gap-3 px-3 py-2"><span class="truncate">{{ connection.name }}</span><span class="shrink-0 font-mono text-xs text-muted">{{ connection.host }}:{{ connection.port }}</span></li></ul><div class="mt-3 flex justify-end gap-2"><button type="button" class="rounded-md px-3 py-2 text-sm hover:bg-panel" :disabled="importingDBeaverConnections" @click="clearDBeaverImport">{{ t('connection.cancel') }}</button><button type="button" class="rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="importingDBeaverConnections" @click="importDBeaverConnections">{{ importingDBeaverConnections ? t('connections.importing') : t('connections.dbeaverImport') }}</button></div></div><p v-if="dbeaverImportError" class="mt-3 text-sm text-rose-500">{{ dbeaverImportError }}</p><p v-else-if="dbeaverImportSuccess" class="mt-3 text-sm text-emerald-600">{{ dbeaverImportSuccess }}</p></div><p v-if="connectionTransferError" class="mt-4 text-sm text-rose-500">{{ connectionTransferError }}</p><p v-else-if="connectionTransferSuccess" class="mt-4 text-sm text-emerald-600">{{ connectionTransferSuccess }}</p></div>
 
           <form v-else-if="activeSection === 'ai'" class="max-w-xl" @submit.prevent="save"><h3 class="text-base font-semibold">{{ t('settings.aiAgent') }}</h3><p class="mt-1 text-sm text-muted">{{ t('ai.description') }}</p><div class="mt-6 grid gap-3"><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.provider') }}<AppSelect :model-value="form.provider" :options="providerOptions" @change="setProvider($event as Provider)" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.baseUrl') }}<input v-model="form.baseUrl" class="field" placeholder="https://api.example.com/v1" @input="scheduleModelLoad" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.apiKey') }} <span v-if="!apiKeyRequired" class="font-normal text-muted">{{ t('ai.optional') }}</span><input v-model="form.apiKey" class="field" type="password" autocomplete="off" :placeholder="hasSavedKey ? t('ai.savedKey') : apiKeyRequired ? selectedProvider.apiKeyHint : t('ai.noApiKey')" @input="scheduleModelLoad" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.model') }}<input v-model="form.model" class="field" list="ai-models" :placeholder="t('ai.modelPlaceholder')" /><datalist id="ai-models"><option v-for="model in models" :key="model" :value="model" /></datalist><span v-if="loadingModels" class="text-xs font-normal text-muted">{{ t('ai.loadingModels') }}</span><span v-else-if="models.length" class="text-xs font-normal text-emerald-600">{{ t('ai.modelsAvailable', { count: models.length }) }}</span><span v-else-if="modelsError" class="text-xs font-normal text-rose-500">{{ modelsError }}</span><span v-else class="text-xs font-normal text-muted">{{ apiKeyRequired ? t('ai.modelsAfterKey') : t('ai.modelsOllama') }}</span></label></div><div class="mt-6 flex justify-end border-t border-line pt-4"><button class="rounded bg-accent px-3 py-2 text-white disabled:opacity-50" :disabled="saving">{{ saving ? t('common.saving') : t('common.save') }}</button></div></form>
+
+          <form v-else-if="activeSection === 'backup'" class="max-w-xl" @submit.prevent="saveBackupSettings"><h3 class="text-base font-semibold">{{ t('settings.backup') }}</h3><p class="mt-1 text-sm text-muted">{{ t('backup.description') }}</p><div class="mt-6 grid gap-3"><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.endpoint') }}<input v-model="backupForm.endpoint" class="field" type="url" placeholder="https://s3.us-east-1.amazonaws.com" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.bucket') }}<input v-model="backupForm.bucket" class="field" autocomplete="off" placeholder="my-dbfock-backups" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.region') }}<input v-model="backupForm.region" class="field" autocomplete="off" placeholder="us-east-1" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.accessKey') }}<input v-model="backupForm.accessKey" class="field" type="password" autocomplete="off" :placeholder="hasSavedBackupAccessKey ? t('backup.savedAccessKey') : 'AKIA…'" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.secret') }}<input v-model="backupForm.secret" class="field" type="password" autocomplete="off" :placeholder="hasSavedBackupSecret ? t('backup.savedSecret') : '…'" /></label></div><p class="mt-4 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">{{ t('backup.credentialsNotice') }}</p><p v-if="backupError" class="mt-3 text-sm text-rose-500">{{ backupError }}</p><p v-else-if="backupSuccess" class="mt-3 text-sm text-emerald-600">{{ backupSuccess }}</p><div class="mt-6 flex flex-wrap justify-end gap-2 border-t border-line pt-4"><button class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup">{{ savingBackup ? t('common.saving') : t('common.save') }}</button><button type="button" class="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup" @click="createBackup">{{ runningBackup ? t('backup.creating') : t('backup.create') }}</button><button type="button" class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup" @click="restoreBackup">{{ restoringBackup ? t('backup.restoring') : t('backup.restore') }}</button></div></form>
 
           <section v-else-if="activeSection === 'about'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('settings.about') }}</h3><p class="mt-1 text-sm text-muted">{{ t('about.description') }}</p><dl class="mt-6 overflow-hidden rounded-lg border border-line bg-panel"><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.version') }}</dt><dd class="font-mono text-sm font-medium">{{ appVersion }}</dd></div><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.license') }}</dt><dd class="font-mono text-sm font-medium">{{ license }}</dd></div><div class="flex items-center justify-between gap-4 px-4 py-3"><dt class="text-sm text-muted">{{ t('about.repository') }}</dt><dd><a class="text-sm font-medium text-accent hover:underline" :href="githubUrl" target="_blank" rel="noreferrer">alexclaz/dbfock</a></dd></div></dl></section>
 

@@ -81,7 +81,7 @@ function openSQLForConnection(connectionId?: string) {
   workspace.activeConnectionId = connection.id
   workspace.openTab({ id: `sql:${connection.id}:${Date.now()}`, title: t('query.defaultTitle'), type: 'sql', connectionId: connection.id, executionConnectionId: connection.id, sql: 'SELECT * FROM users LIMIT 100;' })
 }
-function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit') {
+function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup') {
   const existing = workspace.tabs.find((tab) => tab.id === 'settings')
   if (existing) existing.settingsSection = section || 'appearance'
   else workspace.openTab({ id: 'settings', title: t('settings.title'), type: 'settings', settingsSection: section || 'appearance' })

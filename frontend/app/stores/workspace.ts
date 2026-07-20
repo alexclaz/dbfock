@@ -39,7 +39,7 @@ function savedTabs(value: unknown): WorkspaceTab[] | undefined {
       && (candidate.table === undefined || typeof candidate.table === 'string')
       && (candidate.sql === undefined || typeof candidate.sql === 'string')
       && (candidate.tableSection === undefined || validTableSections.has(candidate.tableSection))
-      && (candidate.settingsSection === undefined || candidate.settingsSection === 'appearance' || candidate.settingsSection === 'shortcuts' || candidate.settingsSection === 'connections' || candidate.settingsSection === 'ai' || candidate.settingsSection === 'audit')
+      && (candidate.settingsSection === undefined || candidate.settingsSection === 'appearance' || candidate.settingsSection === 'shortcuts' || candidate.settingsSection === 'connections' || candidate.settingsSection === 'ai' || candidate.settingsSection === 'audit' || candidate.settingsSection === 'backup')
       && (candidate.aiChat === undefined || isAIAgentChat(candidate.aiChat))
       && (candidate.aiJobId === undefined || typeof candidate.aiJobId === 'string')
       && (candidate.aiStatus === undefined || candidate.aiStatus === 'running' || candidate.aiStatus === 'complete')

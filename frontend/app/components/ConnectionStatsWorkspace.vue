@@ -16,14 +16,14 @@ const loadingMetadata = ref(false)
 const filter = ref('')
 
 const sections: { id: StatsSection; label: string; icon: string; description: string }[] = [
-  { id: 'stats', label: 'stats.section.stats', icon: '▥', description: 'stats.description' },
-  { id: 'session-status', label: 'stats.section.sessionStatus', icon: '◌', description: 'stats.sessionStatusDescription' },
-  { id: 'global-status', label: 'stats.section.globalStatus', icon: '◎', description: 'stats.globalStatusDescription' },
-  { id: 'session-variables', label: 'stats.section.sessionVariables', icon: '≡', description: 'stats.sessionVariablesDescription' },
-  { id: 'global-variables', label: 'stats.section.globalVariables', icon: '≣', description: 'stats.globalVariablesDescription' },
-  { id: 'engines', label: 'stats.section.engines', icon: '▦', description: 'stats.enginesDescription' },
-  { id: 'user-privileges', label: 'stats.section.userPrivileges', icon: '♙', description: 'stats.userPrivilegesDescription' },
-  { id: 'plugins', label: 'stats.section.plugins', icon: '◈', description: 'stats.pluginsDescription' },
+  { id: 'stats', label: 'stats.section.stats', icon: 'lucide:chart-no-axes-combined', description: 'stats.description' },
+  { id: 'session-status', label: 'stats.section.sessionStatus', icon: 'lucide:activity', description: 'stats.sessionStatusDescription' },
+  { id: 'global-status', label: 'stats.section.globalStatus', icon: 'lucide:globe-2', description: 'stats.globalStatusDescription' },
+  { id: 'session-variables', label: 'stats.section.sessionVariables', icon: 'lucide:list', description: 'stats.sessionVariablesDescription' },
+  { id: 'global-variables', label: 'stats.section.globalVariables', icon: 'lucide:list-tree', description: 'stats.globalVariablesDescription' },
+  { id: 'engines', label: 'stats.section.engines', icon: 'lucide:database', description: 'stats.enginesDescription' },
+  { id: 'user-privileges', label: 'stats.section.userPrivileges', icon: 'lucide:shield-check', description: 'stats.userPrivilegesDescription' },
+  { id: 'plugins', label: 'stats.section.plugins', icon: 'lucide:blocks', description: 'stats.pluginsDescription' },
 ]
 
 const maxDayCount = computed(() => Math.max(1, ...(stats.value?.queriesByDay.map((day) => day.success + day.failed) ?? [0])))
@@ -91,7 +91,7 @@ watch(() => props.connection.id, () => {
 
       <div class="mt-6 flex min-h-0 flex-1 flex-col gap-6 md:flex-row">
         <nav class="flex shrink-0 gap-1 overflow-x-auto border-b border-line pb-4 md:w-52 md:flex-col md:overflow-visible md:border-b-0 md:border-r md:pb-0 md:pr-5">
-          <button v-for="section in sections" :key="section.id" type="button" class="settings-nav whitespace-nowrap" :class="activeSection === section.id ? 'settings-nav-active' : ''" @click="selectSection(section.id)"><span class="inline-block w-5 text-center">{{ section.icon }}</span> {{ t(section.label) }}</button>
+          <button v-for="section in sections" :key="section.id" type="button" class="settings-nav flex items-center gap-2 whitespace-nowrap" :class="activeSection === section.id ? 'settings-nav-active' : ''" @click="selectSection(section.id)"><Icon :name="section.icon" class="h-4 w-4 shrink-0" aria-hidden="true" />{{ t(section.label) }}</button>
         </nav>
 
         <div class="min-w-0 flex-1 pb-8">

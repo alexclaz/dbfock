@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { WorkspaceTab } from '~/types/database'
+import { workspaceIcon } from '~/utils/icons'
 
 const props = defineProps<{ tabs: WorkspaceTab[]; activeId: string }>()
 const emit = defineEmits<{ select: [id: string]; close: [id: string]; closeRight: [id: string]; closeOthers: [id: string]; save: [id: string]; reorder: [id: string, targetId: string]; newQuery: [] }>()
@@ -67,13 +68,13 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex h-10 overflow-x-auto border-b border-line bg-panel scrollbar" @click="closeContextMenu">
     <button v-for="tab in tabs" :key="tab.id" :draggable="!isPinned(tab)" class="group relative -mb-px flex h-10 shrink-0 items-center gap-1.5 border-b-2 border-r border-line px-3 text-sm transition-colors" :class="activeId === tab.id ? 'border-b-accent bg-accent/10 font-semibold text-ink shadow-[inset_0_1px_0_rgba(59,130,246,0.2)]' : 'border-b-transparent text-muted hover:bg-canvas/60 hover:text-ink'" :aria-current="activeId === tab.id ? 'page' : undefined" @click.stop="selectTab(tab.id)" @contextmenu.prevent.stop="openContextMenu($event, tab)" @dragstart="startDrag($event, tab)" @dragover.prevent="allowMoveDrop" @drop.prevent="{ const id = $event.dataTransfer?.getData('text/plain'); if (id) emit('reorder', id, tab.id) }">
-      <span v-if="!isPinned(tab)" class="cursor-grab text-xs text-muted" :title="t('tabs.dragToReorder')">⠿</span>
-      <span class="grid h-5 w-5 shrink-0 place-items-center text-base leading-none"><svg v-if="tab.type === 'saved'" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4.75A1.75 1.75 0 0 1 7.75 3h8.5A1.75 1.75 0 0 1 18 4.75V21l-6-3.5L6 21V4.75Z" /></svg><svg v-else-if="tab.type === 'smart'" class="h-4 w-4 text-violet-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.1 4.4L6.5 8.5l4.4 1.1L12 14l1.1-4.4 4.4-1.1-4.4-1.1L12 3ZM5 14l-.7 2.3L2 17l2.3.7L5 20l.7-2.3L8 17l-2.3-.7L5 14Zm14-1-.9 3.1L15 17l3.1.9L19 21l.9-3.1L23 17l-3.1-.9L19 13Z" /></svg><template v-else>{{ tab.type === 'sql' ? '⌘' : tab.type === 'table' ? '▦' : tab.type === 'stats' ? '▥' : tab.type === 'settings' ? '⚙' : '⌂' }}</template></span>
+      <Icon v-if="!isPinned(tab)" name="lucide:grip-vertical" class="h-4 w-4 cursor-grab text-muted" :title="t('tabs.dragToReorder')" aria-hidden="true" />
+      <span class="grid h-5 w-5 shrink-0 place-items-center"><Icon :name="workspaceIcon(tab.type)" class="h-4 w-4" :class="tab.type === 'smart' ? 'text-violet-500' : ''" aria-hidden="true" /></span>
       <span class="whitespace-nowrap">{{ title(tab) }}<b v-if="tab.dirty" class="ml-1 text-accent">•</b></span>
-      <span v-if="tab.aiStatus" class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold" :class="tab.aiStatus === 'running' ? 'bg-violet-500/15 text-violet-600 dark:text-violet-300' : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'" :title="aiStatusLabel(tab)"><i class="h-1.5 w-1.5 rounded-full" :class="tab.aiStatus === 'running' ? 'animate-pulse bg-violet-500' : 'bg-emerald-500'" /><span>{{ tab.aiStatus === 'running' ? 'IA' : '✓' }}</span><span class="sr-only">{{ aiStatusLabel(tab) }}</span></span>
-      <span v-if="!isHome(tab)" class="ml-1 rounded px-1 text-muted opacity-0 group-hover:opacity-100 hover:bg-line" @click.stop="closeTab(tab.id)">×</span>
+      <span v-if="tab.aiStatus" class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold" :class="tab.aiStatus === 'running' ? 'bg-violet-500/15 text-violet-600 dark:text-violet-300' : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'" :title="aiStatusLabel(tab)"><i class="h-1.5 w-1.5 rounded-full" :class="tab.aiStatus === 'running' ? 'animate-pulse bg-violet-500' : 'bg-emerald-500'" /><Icon :name="tab.aiStatus === 'running' ? 'lucide:sparkles' : 'lucide:circle-check'" class="h-3 w-3" aria-hidden="true" /><span class="sr-only">{{ aiStatusLabel(tab) }}</span></span>
+      <button v-if="!isHome(tab)" type="button" class="ml-1 rounded p-1 text-muted opacity-0 group-hover:opacity-100 hover:bg-line" :aria-label="t('common.close')" @click.stop="closeTab(tab.id)"><Icon name="lucide:x" class="h-3.5 w-3.5" aria-hidden="true" /></button>
     </button>
-    <button type="button" class="-mb-px grid h-10 w-10 shrink-0 place-items-center border-b-2 border-b-transparent text-lg text-muted transition-colors hover:bg-canvas/60 hover:text-ink" :title="t('home.newQuery')" :aria-label="t('home.newQuery')" @click.stop="closeContextMenu(); emit('newQuery')">+</button>
+    <button type="button" class="-mb-px grid h-10 w-10 shrink-0 place-items-center border-b-2 border-b-transparent text-muted transition-colors hover:bg-canvas/60 hover:text-ink" :title="t('home.newQuery')" :aria-label="t('home.newQuery')" @click.stop="closeContextMenu(); emit('newQuery')"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" /></button>
   </div>
 
   <Teleport to="body">

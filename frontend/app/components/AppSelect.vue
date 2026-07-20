@@ -90,12 +90,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeOnOutsideCl
   <div ref="root" class="relative">
     <button ref="trigger" type="button" class="app-select" :disabled="disabled" :aria-expanded="open" aria-haspopup="listbox" @click="setOpen(!open)" @keydown="handleKeydown">
       <span class="truncate">{{ selectedOption?.label || placeholder }}</span>
-      <svg class="h-4 w-4 shrink-0 text-muted transition-transform" :class="open ? 'rotate-180' : ''" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" /></svg>
+      <Icon name="lucide:chevron-down" class="h-4 w-4 shrink-0 text-muted transition-transform" :class="open ? 'rotate-180' : ''" aria-hidden="true" />
     </button>
     <Transition name="select-menu">
       <div v-if="open" class="app-select-menu" role="listbox" :aria-activedescendant="activeIndex >= 0 ? `app-select-option-${activeIndex}` : undefined">
         <button v-for="(option, index) in options" :id="`app-select-option-${index}`" :key="String(option.value)" type="button" class="app-select-option" :class="[option.value === modelValue ? 'app-select-option-selected' : '', index === activeIndex ? 'app-select-option-active' : '']" :disabled="option.disabled" role="option" :aria-selected="option.value === modelValue" @mouseenter="activeIndex = index" @click="select(option)">
-          <span class="truncate">{{ option.label }}</span><span v-if="option.value === modelValue" aria-hidden="true">✓</span>
+          <span class="truncate">{{ option.label }}</span><Icon v-if="option.value === modelValue" name="lucide:check" class="h-4 w-4 shrink-0" aria-hidden="true" />
         </button>
       </div>
     </Transition>

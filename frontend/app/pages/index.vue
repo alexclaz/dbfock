@@ -13,7 +13,7 @@ type ResultTab = {
   editing: boolean
   source?: EditableResultSource
 }
-type SmartResultTab = ResultTab & { connectionId: string }
+type SmartResultTab = ResultTab & { connectionId: string; smartQueryId: string }
 type AISettings = { configured: boolean }
 type PendingSave = { tab: WorkspaceTab; resolve: (saved: boolean) => void }
 type PendingConfirmation = { title: string; description: string; confirmLabel: string; tone?: 'default' | 'danger'; resolve: (confirmed: boolean) => void }
@@ -64,6 +64,9 @@ const globalTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart
 const visibleTabs = computed(() => workspace.tabs.filter((tab) => globalTabTypes.has(tab.type) || tab.connectionId === workspace.activeConnectionId))
 const queryConnectionId = computed(() => activeTab.value.executionConnectionId === 'auto' ? activeTab.value.connectionId : activeTab.value.executionConnectionId ?? activeTab.value.connectionId)
 const queryConnection = computed(() => workspace.connections.find((connection) => connection.id === queryConnectionId.value))
+const activeTransactionConnectionId = computed(() => queryConnectionId.value ?? activeTab.value.connectionId ?? workspace.activeConnectionId)
+const activeTransaction = computed(() => activeTransactionConnectionId.value ? transactionStatus[activeTransactionConnectionId.value] : undefined)
+const activeTransactionConnection = computed(() => workspace.connections.find((connection) => connection.id === activeTransactionConnectionId.value))
 const connectionSavedQueries = computed(() => workspace.savedQueries.filter((query) => query.connectionId === workspace.activeConnectionId))
 const connectionSmartQueries = computed(() => workspace.smartQueries.filter((query) => query.connectionId === workspace.activeConnectionId))
 const connectionSmartResultTabs = computed(() => smartResultTabs.filter((tab) => tab.connectionId === workspace.activeConnectionId))
@@ -101,6 +104,11 @@ function openSavedQuery() {
   selectedSavedQueryId.value = ''
   if (!query) return
   workspace.activeConnectionId = query.connectionId
+  const existingTab = workspace.tabs.find((tab) => tab.savedQueryId === query.id)
+  if (existingTab) {
+    workspace.activeTabId = existingTab.id
+    return
+  }
   workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: query.name, type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql, savedQueryId: query.id })
 }
 
@@ -205,8 +213,9 @@ function createResultTab(workspaceTabId: string) {
   const tabs = resultTabs[workspaceTabId] || (resultTabs[workspaceTabId] = [])
   const resultTab: ResultTab = { id: `result:${workspaceTabId}:${Date.now()}:${nextResultTabId++}`, title: t('query.resultTab', { count: tabs.length + 1 }), view: 'table', copied: false, editing: false }
   tabs.push(resultTab)
-  activeResultTabIds[workspaceTabId] = resultTab.id
-  return resultTab
+  const reactiveResultTab = tabs.at(-1)!
+  activeResultTabIds[workspaceTabId] = reactiveResultTab.id
+  return reactiveResultTab
 }
 function currentOrNewResultTab(workspaceTabId: string) {
   return (resultTabs[workspaceTabId] || []).find((tab) => tab.id === activeResultTabIds[workspaceTabId]) || createResultTab(workspaceTabId)
@@ -239,7 +248,7 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
     resultTab.result = pageable ? pageResult(result) : result
     resultTab.source = editableSource(sql, connection)
     if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId: resultTab.id }
-    transactionStatus[connectionId] = { pending: resultTab.result.transactionPending, pendingStatements: resultTab.result.pendingStatements }
+    updateTransactionStatus(connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
   } catch (error: any) { queryError.value = error.message }
   finally { running.value = false }
@@ -273,16 +282,22 @@ function smartQuerySQL(query: SmartQuery, values: Record<string, string>) {
     return sql.replace(placeholder, quote(value))
   }, query.sql)
 }
-function createSmartResultTab(connectionId: string, title: string) {
+function createSmartResultTab(query: SmartQuery) {
+  const { connectionId, id: smartQueryId, title } = query
   const tabsForConnection = smartResultTabs.filter((tab) => tab.connectionId === connectionId)
-  const resultTab: SmartResultTab = { id: `smart-result:${connectionId}:${Date.now()}:${nextResultTabId++}`, title: title || t('query.resultTab', { count: tabsForConnection.length + 1 }), connectionId, view: 'table', copied: false, editing: false }
+  const resultTab: SmartResultTab = { id: `smart-result:${connectionId}:${Date.now()}:${nextResultTabId++}`, title: title || t('query.resultTab', { count: tabsForConnection.length + 1 }), connectionId, smartQueryId, view: 'table', copied: false, editing: false }
   smartResultTabs.push(resultTab)
-  activeSmartResultTabIds[connectionId] = resultTab.id
-  return resultTab
+  const reactiveResultTab = smartResultTabs.at(-1)!
+  activeSmartResultTabIds[connectionId] = reactiveResultTab.id
+  return reactiveResultTab
 }
-function currentOrNewSmartResultTab(connectionId: string, title: string) {
-  const activeId = activeSmartResultTabIds[connectionId]
-  return smartResultTabs.find((tab) => tab.id === activeId && tab.connectionId === connectionId) || createSmartResultTab(connectionId, title)
+function currentOrNewSmartResultTab(query: SmartQuery) {
+  const resultTab = smartResultTabs.find((tab) => tab.connectionId === query.connectionId && tab.smartQueryId === query.id)
+  if (resultTab) {
+    activeSmartResultTabIds[query.connectionId] = resultTab.id
+    return resultTab
+  }
+  return createSmartResultTab(query)
 }
 function closeSmartResultTab(id: string) {
   const index = smartResultTabs.findIndex((tab) => tab.id === id)
@@ -335,7 +350,7 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
       smartQueryError.value = t('query.connectBeforeRunning', { name: connection?.name || t('query.database') })
       return
     }
-    const resultTab = newTab ? createSmartResultTab(query.connectionId, query.title) : currentOrNewSmartResultTab(query.connectionId, query.title)
+    const resultTab = newTab ? createSmartResultTab(query) : currentOrNewSmartResultTab(query)
     resultTab.title = query.title
     smartQueryRunning.value = true
     smartQueryError.value = ''
@@ -345,7 +360,7 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
     resultTab.result = pageable ? pageResult(result) : result
     resultTab.source = editableSource(sql, connection)
     if (pageable) pagedQueries[resultTab.id] = { connectionId: query.connectionId, sql, requestId: resultTab.id }
-    transactionStatus[query.connectionId] = { pending: resultTab.result.transactionPending, pendingStatements: resultTab.result.pendingStatements }
+    updateTransactionStatus(query.connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
   } catch (error: any) { smartQueryError.value = error.message }
   finally { smartQueryRunning.value = false }
@@ -385,7 +400,7 @@ async function saveResultEdits(resultTab: ResultTab, edited: QueryResult) {
     for (const update of updates) transaction = await api<QueryResult>(`/connections/${resultTab.source.connectionId}/rows/update`, { method: 'POST', body: { database: resultTab.source.database, table: resultTab.source.table, ...update } })
     resultTab.result = edited
     resultTab.editing = false
-    if (transaction) transactionStatus[resultTab.source.connectionId] = { pending: transaction.transactionPending, pendingStatements: transaction.pendingStatements }
+    if (transaction) updateTransactionStatus(resultTab.source.connectionId, transaction.transactionPending, transaction.pendingStatements)
     await loadHistory()
   } catch (error: any) { notifyError(error.message) }
 }
@@ -418,20 +433,41 @@ async function loadMoreRows() {
 async function loadTransactionStatus(connectionId: string) {
   transactionStatus[connectionId] = await api<TransactionStatus>(`/connections/${connectionId}/transaction`)
 }
-function requestCommit(connectionId: string) { commitConnectionId.value = connectionId }
-async function commitTransaction() {
+async function requestCommit(connectionId: string) {
+  queryError.value = ''
+  try {
+    await loadTransactionStatus(connectionId)
+    if (transactionStatus[connectionId]?.pending) commitConnectionId.value = connectionId
+  } catch (error: any) { queryError.value = error.message }
+}
+function updateTransactionStatus(connectionId: string, pending: boolean, pendingStatements: number) {
+  transactionStatus[connectionId] = { pending, pendingStatements, statements: [] }
+  if (pending) void loadTransactionStatus(connectionId).catch((error: any) => { queryError.value = error.message })
+}
+async function commitTransaction(statementIds: string[]) {
   const connectionId = commitConnectionId.value
   if (!connectionId) return
   committing.value = true
   queryError.value = ''
-  try { transactionStatus[connectionId] = await api<TransactionStatus>(`/connections/${connectionId}/transaction/commit`, { method: 'POST' }); commitConnectionId.value = undefined; await loadHistory() }
+  try {
+    transactionStatus[connectionId] = await api<TransactionStatus>(`/connections/${connectionId}/transaction/commit`, { method: 'POST', body: { statementIds } })
+    if (!transactionStatus[connectionId]?.pending) commitConnectionId.value = undefined
+    await loadHistory()
+  }
   catch (error: any) { queryError.value = error.message }
   finally { committing.value = false }
 }
-async function rollbackTransaction(connectionId: string) {
+async function rollbackTransaction(statementIds: string[]) {
+  const connectionId = commitConnectionId.value
+  if (!connectionId) return
+  committing.value = true
   queryError.value = ''
-  try { transactionStatus[connectionId] = await api<TransactionStatus>(`/connections/${connectionId}/transaction/rollback`, { method: 'POST' }) }
+  try {
+    transactionStatus[connectionId] = await api<TransactionStatus>(`/connections/${connectionId}/transaction/rollback`, { method: 'POST', body: { statementIds } })
+    if (!transactionStatus[connectionId]?.pending) commitConnectionId.value = undefined
+  }
   catch (error: any) { queryError.value = error.message }
+  finally { committing.value = false }
 }
 
 async function loadHistory() { history.value = (await api<QueryHistory[]>('/query-history')) ?? [] }
@@ -449,7 +485,7 @@ function selectTab(id: string) {
   workspace.activeTabId = id
   if (tab.connectionId) workspace.activeConnectionId = tab.connectionId
 }
-function updateTableSection(section: 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'query' | 'ddl') { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab) { tab.tableSection = section; tab.dirty = true } }
+function updateTableSection(section: 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl') { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab) { tab.tableSection = section; tab.dirty = true } }
 function explainSQL(sql: string) { aiAgent.value?.ask(`${t('query.explainPrompt', { sql })}\n\n${t('query.answerLanguage')}`) }
 function improveSQL(sql: string) { aiAgent.value?.ask(`${t('query.improvePrompt', { sql })}\n\n${t('query.answerLanguage')}`) }
 function updateAIStatus(tabId: string, status: 'running' | 'complete') { const tab = workspace.tabs.find((item) => item.id === tabId); if (tab) tab.aiStatus = status }
@@ -561,6 +597,10 @@ watch(() => workspace.activeConnectionId, () => {
     <div class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeConnections" />
     <section class="flex min-w-0 flex-1 flex-col">
       <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reorder="workspace.moveTab" @new-query="newSQL" />
+      <div v-if="activeTransaction?.pending && activeTransactionConnectionId" class="flex shrink-0 items-center justify-between gap-4 border-b border-amber-500/25 bg-amber-500/5 px-4 py-2 text-xs">
+        <div class="flex min-w-0 items-center gap-2"><span class="truncate font-medium text-ink">{{ activeTransactionConnection?.name }}</span><span class="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-ink">{{ t('transaction.pending', { count: activeTransaction.pendingStatements }) }}</span></div>
+        <div class="flex shrink-0 gap-2"><button class="rounded px-2 py-1 text-rose-700 hover:bg-amber-500/10 dark:text-rose-300" :disabled="committing" @click="requestCommit(activeTransactionConnectionId)">{{ t('transaction.rollback') }}</button><button class="rounded bg-amber-600 px-2.5 py-1 font-medium text-white disabled:opacity-50" :disabled="committing" @click="requestCommit(activeTransactionConnectionId)">{{ committing ? t('transaction.committing') : t('transaction.commit') }}</button></div>
+      </div>
       <div class="min-h-0 flex-1">
         <div v-if="activeTab.type === 'empty'" class="h-full" />
         <div v-else-if="activeTab.type === 'welcome'" class="grid h-full place-items-center p-8">
@@ -578,12 +618,12 @@ watch(() => workspace.activeConnectionId, () => {
         </div>
         <SavedQueriesWorkspace v-else-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
         <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @set-result-view="setSmartResultView" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
-        <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :tab-id="activeTab.id" :connection-id="activeTab.connectionId!" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" :database="activeTab.database!" :table="activeTab.table!" :model-value="activeTab.sql" :active-section="activeTab.tableSection" :ai-configured="aiConfigured" @update:model-value="updateSQL" @update:active-section="updateTableSection" @status="updateAIStatus" />
+        <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" />
         <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
         <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" />
         <div v-else class="flex h-full min-h-0 flex-col">
           <div class="relative flex min-h-64 shrink-0 border-b border-line" :style="{ height: `${editorHeight}%` }">
-            <SqlEditor ref="sqlEditor" split :width="showAIAgent ? editorWidth : 'calc(100% - 1.5rem)'" :model-value="activeTab.sql || ''" :connection-id="queryConnection?.id || ''" :connection-name="queryConnection?.name || ''" :connections="workspace.connections" :execution-connection-id="activeTab.executionConnectionId" :initial-database="queryConnection?.initialDatabase" :production="queryConnection?.environment === 'production'" :transaction-pending="queryConnectionId ? transactionStatus[queryConnectionId]?.pending : false" :pending-statements="queryConnectionId ? transactionStatus[queryConnectionId]?.pendingStatements : 0" :committing="committing" :running="running" @update:model-value="updateSQL" @update:execution-connection-id="updateExecutionConnection" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @send-to-chat="aiAgent?.pasteQuery($event)" @new-query="newSQL" @save-query="saveQuery" @commit="queryConnectionId && requestCommit(queryConnectionId)" @rollback="queryConnectionId && rollbackTransaction(queryConnectionId)" />
+            <SqlEditor ref="sqlEditor" split :width="showAIAgent ? editorWidth : 'calc(100% - 1.5rem)'" :model-value="activeTab.sql || ''" :connection-id="queryConnection?.id || ''" :connection-name="queryConnection?.name || ''" :connections="workspace.connections" :execution-connection-id="activeTab.executionConnectionId" :initial-database="queryConnection?.initialDatabase" :production="queryConnection?.environment === 'production'" :running="running" @update:model-value="updateSQL" @update:execution-connection-id="updateExecutionConnection" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @send-to-chat="aiAgent?.pasteQuery($event)" @new-query="newSQL" @save-query="saveQuery" />
             <div v-if="showAIAgent" class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeHorizontal" @dblclick="hideAIAgent" />
             <AIAgentPanel v-if="showAIAgent && queryConnectionId" ref="aiAgent" :tab-id="activeTab.id" :width="100 - editorWidth" :connection-id="queryConnectionId" :database="queryConnection?.initialDatabase" :query="activeTab.sql" @apply="sqlEditor?.insertSQL($event)" @status="updateAIStatus" />
             <button v-else-if="aiConfigured" type="button" class="absolute inset-y-0 right-0 z-10 w-6 border-l border-line bg-panel text-xs font-medium text-muted hover:bg-canvas hover:text-ink" :title="t('aiAgent.title')" :aria-label="t('aiAgent.title')" style="writing-mode: vertical-rl" @click="showHiddenAIAgent">{{ t('aiAgent.title') }}</button>
@@ -597,7 +637,7 @@ watch(() => workspace.activeConnectionId, () => {
       <div class="border-t border-line bg-panel px-4 py-2"><details><summary class="cursor-pointer text-xs font-medium text-muted">{{ t('query.history', { count: history.length }) }}</summary><div class="scrollbar mt-2 max-h-28 overflow-auto"><button v-for="item in history" :key="item.id" class="block w-full truncate py-1 text-left font-mono text-xs text-muted hover:text-ink" @click="workspace.openTab({ id: `sql:${item.connectionId}:${Date.now()}`, title: t('query.historyTitle'), type: 'sql', connectionId: item.connectionId, executionConnectionId: item.connectionId, sql: item.sql })">{{ item.status === 'error' ? '✕' : '✓' }} {{ item.sql }}</button></div></details></div>
     </section>
     <ConnectionModal v-model="showConnection" :connection="editing" @saved="saved" @deleted="deleted" />
-    <TransactionCommitModal v-if="commitConnectionId" :model-value="true" :connection-name="workspace.connections.find((connection) => connection.id === commitConnectionId)?.name || ''" :pending-statements="transactionStatus[commitConnectionId]?.pendingStatements || 0" :committing="committing" @update:model-value="commitConnectionId = undefined" @confirm="commitTransaction" />
+    <TransactionCommitModal v-if="commitConnectionId" :model-value="true" :connection-name="workspace.connections.find((connection) => connection.id === commitConnectionId)?.name || ''" :statements="transactionStatus[commitConnectionId]?.statements || []" :committing="committing" @update:model-value="commitConnectionId = undefined" @commit="commitTransaction" @rollback="rollbackTransaction" />
     <GlobalSearch v-if="showGlobalSearch" :tabs="workspace.tabs" :active-tab-id="workspace.activeTabId" :saved-queries="connectionSavedQueries" :smart-queries="workspace.smartQueries" :connections="workspace.connections" @close="showGlobalSearch = false" @select-tab="workspace.activeTabId = $event" @open-saved-query="openSavedQueryById" @open-smart-query="openSmartQueryById" @new-query="newSQL" @open-settings="openSettings" />
     <QuerySaveDialog :model-value="Boolean(pendingSave)" :initial-value="pendingSave?.tab.title || ''" :title="t('query.saveTitle')" :description="t('query.saveDescription')" :label="t('query.nameLabel')" :confirm-label="t('query.saveAction')" :cancel-label="t('connection.cancel')" @update:model-value="(value) => { if (!value) resolveSave() }" @confirm="resolveSave" />
     <AppConfirmDialog :model-value="Boolean(pendingConfirmation)" :title="pendingConfirmation?.title || ''" :description="pendingConfirmation?.description || ''" :confirm-label="pendingConfirmation?.confirmLabel || ''" :cancel-label="t('connection.cancel')" :tone="pendingConfirmation?.tone" @update:model-value="(value) => { if (!value) resolveConfirmation(false) }" @confirm="resolveConfirmation(true)" />

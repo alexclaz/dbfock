@@ -15,10 +15,16 @@ import (
 )
 
 type transactionSession struct {
-	db                *sql.DB
-	tx                *sql.Tx
-	mu                sync.Mutex
-	pendingStatements int
+	db         *sql.DB
+	tx         *sql.Tx
+	mu         sync.Mutex
+	statements []pendingStatement
+	nextID     int
+}
+
+type pendingStatement struct {
+	models.PendingTransactionStatement
+	args []any
 }
 
 type Provider struct {
@@ -374,11 +380,11 @@ func (p *Provider) UpdateRowInTransaction(ctx context.Context, c models.Connecti
 
 	result, err := p.runWithQueryer(ctx, statement, 0, args, session.tx)
 	if err == nil && result.AffectedRows > 0 {
-		session.pendingStatements++
+		session.addStatement(statement, args)
 	}
 	if result != nil {
-		result.TransactionPending = session.pendingStatements > 0
-		result.PendingStatements = session.pendingStatements
+		result.TransactionPending = len(session.statements) > 0
+		result.PendingStatements = len(session.statements)
 	}
 	return result, err
 }
@@ -453,11 +459,11 @@ func (p *Provider) QueryInTransaction(ctx context.Context, c models.Connection, 
 
 	result, err := p.runWithQueryer(ctx, statement, maxRows, nil, session.tx)
 	if err == nil && mutating {
-		session.pendingStatements++
+		session.addStatement(statement, nil)
 	}
 	if result != nil {
-		result.TransactionPending = session.pendingStatements > 0
-		result.PendingStatements = session.pendingStatements
+		result.TransactionPending = len(session.statements) > 0
+		result.PendingStatements = len(session.statements)
 	}
 	return result, err
 }
@@ -471,10 +477,23 @@ func (p *Provider) TransactionStatus(c models.Connection) models.TransactionStat
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	return models.TransactionStatus{Pending: session.pendingStatements > 0, PendingStatements: session.pendingStatements}
+	return session.status()
 }
 
-func (p *Provider) CommitTransaction(ctx context.Context, c models.Connection, _ []string) (models.TransactionStatus, error) {
+func (p *Provider) CommitTransaction(ctx context.Context, c models.Connection, statementIDs []string) (models.TransactionStatus, error) {
+	return p.finishTransaction(ctx, c, statementIDs, true)
+}
+
+func (p *Provider) RollbackTransaction(ctx context.Context, c models.Connection, statementIDs []string) (models.TransactionStatus, error) {
+	return p.finishTransaction(ctx, c, statementIDs, false)
+}
+
+// finishTransaction supports both the original all-or-nothing controls and a
+// chosen subset. A database transaction cannot commit or roll back an arbitrary
+// statement independently, so for a subset we discard the current transaction,
+// commit the chosen statements in order, and recreate the remaining pending
+// transaction from the recorded statements.
+func (p *Provider) finishTransaction(ctx context.Context, c models.Connection, statementIDs []string, commit bool) (models.TransactionStatus, error) {
 	p.transactionMu.Lock()
 	session := p.transactions[c.ID]
 	if session == nil {
@@ -482,37 +501,138 @@ func (p *Provider) CommitTransaction(ctx context.Context, c models.Connection, _
 		return models.TransactionStatus{}, nil
 	}
 	session.mu.Lock()
-	err := session.tx.Commit()
-	delete(p.transactions, c.ID)
-	p.transactionMu.Unlock()
-	session.mu.Unlock()
-	closeErr := session.db.Close()
+	defer session.mu.Unlock()
+	defer p.transactionMu.Unlock()
+
+	chosen, remaining, err := chooseStatements(session.statements, statementIDs)
 	if err != nil {
-		return models.TransactionStatus{}, err
+		return session.status(), err
 	}
-	if closeErr != nil {
+	if len(remaining) == 0 {
+		var finishErr error
+		if commit {
+			finishErr = session.tx.Commit()
+		} else {
+			finishErr = session.tx.Rollback()
+		}
+		delete(p.transactions, c.ID)
+		closeErr := session.db.Close()
+		if finishErr != nil && finishErr != sql.ErrTxDone {
+			return models.TransactionStatus{}, finishErr
+		}
 		return models.TransactionStatus{}, closeErr
 	}
-	return models.TransactionStatus{}, nil
+
+	if err := session.tx.Rollback(); err != nil && err != sql.ErrTxDone {
+		return session.status(), err
+	}
+	if err := session.db.Close(); err != nil {
+		return session.status(), err
+	}
+	delete(p.transactions, c.ID)
+
+	if commit {
+		if err := p.executeStatements(ctx, c, chosen, true); err != nil {
+			return p.restorePending(ctx, c, session.statements, session.nextID, err)
+		}
+	}
+	if err := p.createPendingSession(ctx, c, remaining, session.nextID); err != nil {
+		if !commit {
+			return p.restorePending(ctx, c, session.statements, session.nextID, err)
+		}
+		return models.TransactionStatus{}, fmt.Errorf("selected changes were committed, but the remaining pending changes could not be restored: %w", err)
+	}
+	return p.transactions[c.ID].status(), nil
 }
 
-func (p *Provider) RollbackTransaction(ctx context.Context, c models.Connection, _ []string) (models.TransactionStatus, error) {
-	p.transactionMu.Lock()
-	session := p.transactions[c.ID]
-	if session == nil {
-		p.transactionMu.Unlock()
-		return models.TransactionStatus{}, nil
+func (s *transactionSession) addStatement(statement string, args []any) {
+	s.nextID++
+	s.statements = append(s.statements, pendingStatement{PendingTransactionStatement: models.PendingTransactionStatement{ID: fmt.Sprintf("pending-%d", s.nextID), SQL: statement}, args: args})
+}
+
+func (s *transactionSession) status() models.TransactionStatus {
+	statements := make([]models.PendingTransactionStatement, len(s.statements))
+	for i, statement := range s.statements {
+		statements[i] = statement.PendingTransactionStatement
 	}
-	session.mu.Lock()
-	err := session.tx.Rollback()
-	delete(p.transactions, c.ID)
-	p.transactionMu.Unlock()
-	session.mu.Unlock()
-	closeErr := session.db.Close()
-	if err != nil && err != sql.ErrTxDone {
-		return models.TransactionStatus{}, err
+	return models.TransactionStatus{Pending: len(statements) > 0, PendingStatements: len(statements), Statements: statements}
+}
+
+func chooseStatements(statements []pendingStatement, ids []string) (chosen, remaining []pendingStatement, err error) {
+	if len(ids) == 0 {
+		return append([]pendingStatement(nil), statements...), nil, nil
 	}
-	return models.TransactionStatus{}, closeErr
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, nil, fmt.Errorf("select at least one pending statement")
+	}
+	for _, statement := range statements {
+		if _, ok := wanted[statement.ID]; ok {
+			chosen = append(chosen, statement)
+			delete(wanted, statement.ID)
+		} else {
+			remaining = append(remaining, statement)
+		}
+	}
+	if len(wanted) > 0 {
+		return nil, nil, fmt.Errorf("one or more pending statements no longer exist")
+	}
+	return chosen, remaining, nil
+}
+
+func (p *Provider) executeStatements(ctx context.Context, c models.Connection, statements []pendingStatement, commit bool) error {
+	db, err := p.open(c)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := beginTransaction(ctx, db)
+	if err != nil {
+		return err
+	}
+	for _, statement := range statements {
+		if _, err := p.runWithQueryer(ctx, statement.SQL, 0, statement.args, tx); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if commit {
+		return tx.Commit()
+	}
+	return tx.Rollback()
+}
+
+func (p *Provider) createPendingSession(ctx context.Context, c models.Connection, statements []pendingStatement, nextID int) error {
+	db, err := p.open(c)
+	if err != nil {
+		return err
+	}
+	tx, err := beginTransaction(ctx, db)
+	if err != nil {
+		db.Close()
+		return err
+	}
+	for _, statement := range statements {
+		if _, err := p.runWithQueryer(ctx, statement.SQL, 0, statement.args, tx); err != nil {
+			_ = tx.Rollback()
+			db.Close()
+			return err
+		}
+	}
+	p.transactions[c.ID] = &transactionSession{db: db, tx: tx, statements: statements, nextID: nextID}
+	return nil
+}
+
+func (p *Provider) restorePending(ctx context.Context, c models.Connection, statements []pendingStatement, nextID int, originalErr error) (models.TransactionStatus, error) {
+	if err := p.createPendingSession(ctx, c, statements, nextID); err != nil {
+		return models.TransactionStatus{}, fmt.Errorf("%w; could not restore pending changes: %v", originalErr, err)
+	}
+	return p.transactions[c.ID].status(), originalErr
 }
 
 type queryer interface {

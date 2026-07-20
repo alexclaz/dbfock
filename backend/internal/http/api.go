@@ -127,6 +127,10 @@ type connectionRequest struct {
 	TimeoutSeconds  int    `json:"timeoutSeconds"`
 }
 
+type transactionActionRequest struct {
+	StatementIDs []string `json:"statementIds"`
+}
+
 type connectionExport struct {
 	Version     int                 `json:"version"`
 	Connections []connectionRequest `json:"connections"`
@@ -579,6 +583,10 @@ func (a *API) transactionStatus(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, models.TransactionStatus{})
 }
 func (a *API) commitTransaction(w http.ResponseWriter, r *http.Request) {
+	var req transactionActionRequest
+	if r.ContentLength != 0 && decode(w, r, &req) != nil {
+		return
+	}
 	c, err := a.connection(r.Context())
 	if err != nil {
 		fail(w, err)
@@ -596,7 +604,7 @@ func (a *API) commitTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
 	defer cancel()
-	status, err := transactional.CommitTransaction(ctx, c, nil)
+	status, err := transactional.CommitTransaction(ctx, c, req.StatementIDs)
 	if err != nil {
 		fail(w, err)
 		return
@@ -604,6 +612,10 @@ func (a *API) commitTransaction(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, status)
 }
 func (a *API) rollbackTransaction(w http.ResponseWriter, r *http.Request) {
+	var req transactionActionRequest
+	if r.ContentLength != 0 && decode(w, r, &req) != nil {
+		return
+	}
 	c, err := a.connection(r.Context())
 	if err != nil {
 		fail(w, err)
@@ -617,7 +629,7 @@ func (a *API) rollbackTransaction(w http.ResponseWriter, r *http.Request) {
 	if transactional, ok := p.(database.TransactionalProvider); ok {
 		ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
 		defer cancel()
-		status, err := transactional.RollbackTransaction(ctx, c, nil)
+		status, err := transactional.RollbackTransaction(ctx, c, req.StatementIDs)
 		if err != nil {
 			fail(w, err)
 			return

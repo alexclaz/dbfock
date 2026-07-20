@@ -33,6 +33,11 @@ function saveEdit() {
   emit('update', editing.value.id, editChanges())
   editing.value = undefined
 }
+function removeEditing() {
+  if (!editing.value) return
+  emit('remove', editing.value.id)
+  editing.value = undefined
+}
 function openInEditor() {
   if (!editing.value || !editTitle.value.trim() || !editDescription.value.trim() || !editSQL.value.trim()) return
   const query = { ...editing.value, ...editChanges() }
@@ -81,7 +86,7 @@ onBeforeUnmount(() => {
           <div class="mt-4 grid gap-3 sm:grid-cols-2">
             <label v-for="parameter in query.parameters" :key="parameter.key" class="block text-xs font-medium text-muted"><span class="mb-1 block">{{ parameter.key }}</span><input v-model="queryValues(query)[parameter.key]" type="text" class="h-9 w-full rounded-md border border-line bg-canvas px-2 text-sm text-ink outline-none focus:border-accent" /></label>
           </div>
-          <div class="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3"><button type="button" class="text-sm font-medium text-accent hover:underline" @click="openEdit(query)">{{ t('smartQueries.viewAndEdit') }}</button><div class="flex shrink-0 items-center gap-1"><button type="button" class="rounded-md p-2 text-rose-500 hover:bg-rose-500/10" :title="t('smartQueries.delete')" :aria-label="t('smartQueries.delete')" @click="emit('remove', query.id)"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V4h6v2m-8 0 1 15h8l1-15M10 10v7m4-7v7" /></svg></button><button type="button" class="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90" @click="run(query, $event)">{{ commandPressed ? t('smartQueries.runNewTab') : t('smartQueries.run') }}</button></div></div>
+          <div class="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3"><button type="button" class="text-sm font-medium text-accent hover:underline" @click="openEdit(query)">{{ t('smartQueries.viewAndEdit') }}</button><div class="flex shrink-0 items-center gap-1"><button type="button" class="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90" @click="run(query, $event)">{{ commandPressed ? t('smartQueries.runNewTab') : t('smartQueries.run') }}</button></div></div>
         </article>
       </div>
       <div v-else class="rounded-xl border border-dashed border-line px-6 py-16 text-center"><div class="text-2xl text-muted">✦</div><h2 class="mt-3 font-medium">{{ t('smartQueries.emptyTitle') }}</h2><p class="mt-1 text-sm text-muted">{{ t('smartQueries.emptyDescription') }}</p></div>
@@ -99,7 +104,7 @@ onBeforeUnmount(() => {
       <form class="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl" @submit.prevent="saveEdit">
         <div class="flex items-start justify-between gap-4 border-b border-line p-5"><div><h2 class="font-semibold">{{ t('smartQueries.editTitle') }}</h2><p class="mt-1 text-sm text-muted">{{ t('smartQueries.editDescription') }}</p></div><button type="button" class="rounded p-1 text-muted hover:bg-canvas" :aria-label="t('common.close')" @click="editing = undefined">×</button></div>
         <div class="scrollbar grid gap-4 overflow-auto p-5"><label class="block text-sm font-medium">{{ t('smartQueries.nameLabel') }}<input v-model="editTitle" required class="mt-1 h-10 w-full rounded-md border border-line bg-canvas px-3 text-sm outline-none focus:border-accent" /></label><label class="block text-sm font-medium">{{ t('smartQueries.descriptionLabel') }}<textarea v-model="editDescription" required rows="3" class="mt-1 w-full rounded-md border border-line bg-canvas px-3 py-2 text-sm outline-none focus:border-accent" /></label><label class="block text-sm font-medium">{{ t('smartQueries.sqlLabel') }}<textarea v-model="editSQL" required rows="12" spellcheck="false" class="mt-1 w-full rounded-md border border-line bg-canvas px-3 py-2 font-mono text-xs leading-5 outline-none focus:border-accent" /></label></div>
-        <div class="flex flex-col-reverse gap-2 border-t border-line bg-canvas/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><button type="button" class="rounded-lg border border-line px-3.5 py-2 text-sm font-medium hover:bg-panel" @click="openInEditor">{{ t('smartQueries.openInEditor') }}</button><div class="flex gap-2"><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-muted hover:bg-panel" @click="editing = undefined">{{ t('connection.cancel') }}</button><button type="submit" class="rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-white hover:bg-accent/90">{{ t('common.save') }}</button></div></div>
+        <div class="flex flex-col-reverse gap-2 border-t border-line bg-canvas/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><button type="button" class="rounded-lg border border-line px-3.5 py-2 text-sm font-medium hover:bg-panel" @click="openInEditor">{{ t('smartQueries.openInEditor') }}</button><div class="flex gap-2"><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-rose-500 hover:bg-rose-500/10" @click="removeEditing">{{ t('smartQueries.delete') }}</button><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-muted hover:bg-panel" @click="editing = undefined">{{ t('connection.cancel') }}</button><button type="submit" class="rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-white hover:bg-accent/90">{{ t('common.save') }}</button></div></div>
       </form>
     </div>
   </Teleport>

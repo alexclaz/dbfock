@@ -80,6 +80,8 @@ const restoringBackup = ref(false)
 const deletingBackupKey = ref('')
 const backups = ref<BackupItem[]>([])
 const selectedBackupKey = ref('')
+const showRestoreConfirmation = ref(false)
+const backupPendingDeletionKey = ref('')
 const importInput = ref<HTMLInputElement>()
 const dbeaverImportInput = ref<HTMLInputElement>()
 const connectionTransferError = ref('')
@@ -157,9 +159,12 @@ async function createBackup() {
   catch (cause: any) { backupError.value = cause.message || t('backup.createError') }
   finally { runningBackup.value = false }
 }
-async function restoreBackup() {
+function requestRestoreBackup() {
   if (!selectedBackupKey.value) { backupError.value = 'Escolha um backup para obter.'; return }
-  if (!window.confirm(t('backup.restoreConfirm'))) return
+  showRestoreConfirmation.value = true
+}
+async function restoreBackup() {
+  showRestoreConfirmation.value = false
   backupError.value = ''; backupSuccess.value = ''; restoringBackup.value = true
   try { await api('/backup/restore', { method: 'POST', body: { key: selectedBackupKey.value } }); await Promise.all([workspace.refreshConnections(), workspace.reloadWorkspaceQueries()]); backupSuccess.value = t('backup.restored') }
   catch (cause: any) { backupError.value = cause.message || t('backup.restoreError') }
@@ -169,8 +174,11 @@ async function loadBackups() {
   backups.value = (await api<BackupItem[]>('/backup/items')) ?? []
   if (!backups.value.some((backup) => backup.key === selectedBackupKey.value)) selectedBackupKey.value = backups.value[0]?.key || ''
 }
-async function deleteBackup(key: string) {
-  if (!window.confirm('Excluir este backup do S3?')) return
+function requestDeleteBackup(key: string) { backupPendingDeletionKey.value = key }
+async function deleteBackup() {
+  const key = backupPendingDeletionKey.value
+  if (!key) return
+  backupPendingDeletionKey.value = ''
   backupError.value = ''; backupSuccess.value = ''; deletingBackupKey.value = key
   try { await api('/backup/items', { method: 'DELETE', body: { key } }); await loadBackups() }
   catch (cause: any) { backupError.value = cause.message || 'Não foi possível excluir o backup.' }
@@ -283,7 +291,7 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
                 <label v-for="backup in backups" :key="backup.key" class="flex cursor-pointer items-center gap-3 bg-canvas px-3 py-2.5 hover:bg-panel">
                   <input v-model="selectedBackupKey" type="radio" name="backup" :value="backup.key" />
                   <span class="min-w-0 flex-1"><span class="block text-sm font-medium">{{ formatDate(backup.createdAt) }}</span><span class="block truncate font-mono text-xs text-muted">{{ backup.key }} · {{ Math.ceil(backup.size / 1024) }} KB</span></span>
-                  <button type="button" class="rounded px-2 py-1 text-xs text-rose-500 hover:bg-rose-500/10 disabled:opacity-50" :disabled="Boolean(deletingBackupKey)" @click.prevent="deleteBackup(backup.key)">{{ deletingBackupKey === backup.key ? 'Excluindo…' : 'Excluir' }}</button>
+                  <button type="button" class="rounded px-2 py-1 text-xs text-rose-500 hover:bg-rose-500/10 disabled:opacity-50" :disabled="Boolean(deletingBackupKey)" @click.prevent="requestDeleteBackup(backup.key)">{{ deletingBackupKey === backup.key ? 'Excluindo…' : 'Excluir' }}</button>
                 </label>
               </div>
               <p v-else class="mt-3 text-sm text-muted">Nenhum backup disponível neste bucket.</p>
@@ -293,7 +301,7 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
             <div class="mt-6 flex flex-wrap justify-end gap-2 border-t border-line pt-4">
               <button class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup">{{ savingBackup ? t('common.saving') : t('common.save') }}</button>
               <button type="button" class="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup" @click="createBackup">{{ runningBackup ? t('backup.creating') : t('backup.create') }}</button>
-              <button type="button" class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup || !selectedBackupKey" @click="restoreBackup">{{ restoringBackup ? t('backup.restoring') : t('backup.restore') }}</button>
+              <button type="button" class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup || !selectedBackupKey" @click="requestRestoreBackup">{{ restoringBackup ? t('backup.restoring') : t('backup.restore') }}</button>
             </div>
           </form>
 
@@ -323,6 +331,8 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
       </div>
     </div>
   </section>
+  <AppConfirmDialog v-model="showRestoreConfirmation" :title="t('backup.restore')" :description="t('backup.restoreConfirm')" :confirm-label="t('backup.restore')" :cancel-label="t('connection.cancel')" tone="danger" @confirm="restoreBackup" />
+  <AppConfirmDialog :model-value="Boolean(backupPendingDeletionKey)" :title="'Excluir backup'" :description="'Excluir este backup do S3? Esta ação não pode ser desfeita.'" :confirm-label="'Excluir'" :cancel-label="t('connection.cancel')" tone="danger" @update:model-value="(visible) => { if (!visible) backupPendingDeletionKey = '' }" @confirm="deleteBackup" />
 </template>
 
 <style scoped>

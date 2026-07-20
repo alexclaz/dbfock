@@ -77,7 +77,7 @@ func newDesktopApp() (*desktopApp, error) {
 	}
 	cfg.Env = "desktop"
 	cfg.Host = "127.0.0.1"
-	cfg.Port = "8080"
+	cfg.Port = "18080"
 	cfg.DatabasePath = filepath.Join(dataDir, "app.db")
 	cfg.EncryptionKey = key
 	cfg.CORSAllowedOrigins = []string{

@@ -131,7 +131,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The API health endpoint is available at [http://localhost:8080/health](http://localhost:8080/health).
+Open [http://localhost:13000](http://localhost:13000). The API health endpoint is available at [http://localhost:18080/health](http://localhost:18080/health).
+
+The Docker host ports are configurable in `.env`: `BACKEND_PORT` defaults to `18080` and `FRONTEND_PORT` defaults to `13000`. For example, set `BACKEND_PORT=19080` and `FRONTEND_PORT=13001` before starting Compose if either port is in use. The containers continue using their internal ports, so only the host mappings change.
 
 Docker Compose starts DBfock only. Add a connection inside the UI for the MySQL server you want to manage.
 
@@ -147,7 +149,7 @@ cd backend && ENCRYPTION_KEY=local-development-key go run ./cmd/api
 cd frontend && npm install && npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:13000](http://localhost:13000). The local API defaults to [http://localhost:18080/health](http://localhost:18080/health); override `APP_PORT`, `FRONTEND_PORT`, and `NUXT_PUBLIC_API_BASE` together if you need different local ports.
 
 ## Desktop App
 

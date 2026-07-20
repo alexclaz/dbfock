@@ -40,10 +40,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		Env: value("APP_ENV", "development"), Host: value("APP_HOST", ""), Port: value("APP_PORT", "8080"),
+		Env: value("APP_ENV", "development"), Host: value("APP_HOST", ""), Port: value("APP_PORT", "18080"),
 		DatabasePath:        value("APP_DATABASE_PATH", "./data/app.db"),
 		EncryptionKey:       os.Getenv("ENCRYPTION_KEY"),
-		CORSAllowedOrigins:  strings.Split(value("CORS_ALLOWED_ORIGINS", "http://localhost:3000"), ","),
+		CORSAllowedOrigins:  strings.Split(value("CORS_ALLOWED_ORIGINS", "http://localhost:13000"), ","),
 		DefaultQueryTimeout: time.Duration(timeout) * time.Second, MaxQueryRows: maxRows,
 		MaxOpenConnections: maxOpen, MaxConcurrentQueries: maxConcurrent,
 		MaxRequestBodyBytes: 1 << 20,

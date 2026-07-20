@@ -1,11 +1,26 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/dbfock/database-manager/backend/internal/models"
 )
+
+func TestScopeConfirmationMessageCarriesOnlySuggestedIdentifiers(t *testing.T) {
+	message := scopeConfirmationMessage("tables", "liste produtos", []string{"catalogo"}, []aiTableRef{{Database: "catalogo", Table: "produtos"}})
+	if !strings.HasPrefix(message, scopeConfirmationPrefix) {
+		t.Fatalf("scope confirmation prefix missing: %q", message)
+	}
+	var confirmation aiScopeConfirmation
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(message, scopeConfirmationPrefix)), &confirmation); err != nil {
+		t.Fatalf("decode scope confirmation: %v", err)
+	}
+	if confirmation.Step != "tables" || confirmation.Prompt != "liste produtos" || len(confirmation.Databases) != 1 || confirmation.Databases[0] != "catalogo" || len(confirmation.Tables) != 1 || confirmation.Tables[0].Table != "produtos" {
+		t.Fatalf("unexpected scope confirmation: %#v", confirmation)
+	}
+}
 
 func TestProgressiveSelectionKeepsOnlyChosenSchema(t *testing.T) {
 	tables := []aiTableRef{{Database: "petshop", Table: "animais"}, {Database: "petshop", Table: "empresas"}, {Database: "petshop", Table: "vendas"}}

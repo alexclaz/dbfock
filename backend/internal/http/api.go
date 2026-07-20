@@ -630,6 +630,33 @@ type aiChatRequest struct {
 	SelectedDatabases []string        `json:"selectedDatabases"`
 	TableScope        string          `json:"tableScope"`
 	SelectedTables    []aiTableRef    `json:"selectedTables"`
+	ScopeConfirmation string          `json:"scopeConfirmation"`
+}
+
+// scopeConfirmationPrefix marks an internal response consumed by the chat UI.
+// It is deliberately kept out of the natural-language conversation so that a
+// user must explicitly approve the AI's narrowed schema before SQL is made.
+const scopeConfirmationPrefix = "__DBFOCK_SCOPE_CONFIRMATION__:"
+
+type aiScopeConfirmation struct {
+	Step      string       `json:"step"`
+	Prompt    string       `json:"prompt"`
+	Databases []string     `json:"databases"`
+	Tables    []aiTableRef `json:"tables"`
+}
+
+func scopeConfirmationMessage(step, prompt string, databases []string, tables []aiTableRef) string {
+	if databases == nil {
+		databases = []string{}
+	}
+	if tables == nil {
+		tables = []aiTableRef{}
+	}
+	payload, err := json.Marshal(aiScopeConfirmation{Step: step, Prompt: prompt, Databases: databases, Tables: tables})
+	if err != nil {
+		return ""
+	}
+	return scopeConfirmationPrefix + string(payload)
 }
 
 type smartQueryRequest struct {
@@ -1136,6 +1163,12 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 	if len(selectedDatabaseNames) == 0 {
 		return "No accessible databases were found for this connection.", nil
 	}
+	// With the default broad scope, pause after each AI recommendation. This is
+	// especially useful for connections with many databases and tables: users
+	// can approve the concise suggestion or switch to the existing picker.
+	if in.DatabaseScope == "all" && in.TableScope == "all" && in.ScopeConfirmation == "" {
+		return scopeConfirmationMessage("databases", in.Prompt, selectedDatabaseNames, nil), nil
+	}
 
 	availableTables := []aiTableRef{}
 	for _, name := range selectedDatabaseNames {
@@ -1166,6 +1199,9 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 		}
 		_ = decodeAIJSON(raw, &tableChoice)
 		selectedTableRefs = selectedTables(tableChoice, availableTables, in.Prompt)
+	}
+	if in.TableScope == "all" && in.ScopeConfirmation == "databases" {
+		return scopeConfirmationMessage("tables", in.Prompt, selectedDatabaseNames, selectedTableRefs), nil
 	}
 
 	structures := map[aiTableRef]*models.TableStructure{}

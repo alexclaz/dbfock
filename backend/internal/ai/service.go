@@ -197,6 +197,25 @@ func (s *Service) ChatWithAudit(ctx context.Context, setting models.AISetting, r
 }
 
 func (s *Service) chat(ctx context.Context, setting models.AISetting, systemPrompt, prompt string) (string, error) {
+	response, err := s.chatOnce(ctx, setting, systemPrompt, prompt)
+	if err != nil && retryMalformedProviderResponse(err) {
+		return s.chatOnce(ctx, setting, systemPrompt, prompt)
+	}
+	return response, err
+}
+
+// retryMalformedProviderResponse handles transient, truncated JSON returned by
+// OpenAI-compatible gateways. Retrying once is safe because these calls only
+// generate text and never execute SQL.
+func retryMalformedProviderResponse(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unexpected end of json input") || strings.Contains(message, "unexpected eof")
+}
+
+func (s *Service) chatOnce(ctx context.Context, setting models.AISetting, systemPrompt, prompt string) (string, error) {
 	key := ""
 	var err error
 	if setting.APIKeyEncrypted != "" {

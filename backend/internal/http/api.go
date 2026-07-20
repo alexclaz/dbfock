@@ -57,12 +57,26 @@ func (a *API) Router() http.Handler {
 		r.Get("/ai/audit-logs", a.listAIAuditLogs)
 		r.Get("/backup/settings", a.getBackupSettings)
 		r.Put("/backup/settings", a.saveBackupSettings)
+		r.Get("/backup/items", a.listBackups)
 		r.Post("/backup/create", a.createBackup)
 		r.Post("/backup/restore", a.restoreBackup)
+		r.Delete("/backup/items", a.deleteBackup)
 		r.Post("/ai/chat", a.aiChat)
 		r.Post("/ai/smart-queries", a.createSmartQuery)
 		r.Post("/ai/chat/jobs", a.createAIChatJob)
 		r.Get("/ai/chat/jobs/{id}", a.getAIChatJob)
+		r.Route("/saved-queries", func(r chi.Router) {
+			r.Get("/", a.listSavedQueries)
+			r.Post("/", a.saveSavedQuery)
+			r.Put("/{id}", a.saveSavedQuery)
+			r.Delete("/{id}", a.deleteSavedQuery)
+		})
+		r.Route("/smart-queries", func(r chi.Router) {
+			r.Get("/", a.listSmartQueries)
+			r.Post("/", a.saveSmartQuery)
+			r.Put("/{id}", a.saveSmartQuery)
+			r.Delete("/{id}", a.deleteSmartQuery)
+		})
 		r.Get("/auth/me", func(w http.ResponseWriter, r *http.Request) {
 			respond(w, http.StatusOK, map[string]any{"id": repository.LocalUserID, "name": "Local user", "email": "local@dbfock.local"})
 		})
@@ -86,6 +100,7 @@ func (a *API) Router() http.Handler {
 				r.Get("/databases/{database}/tables/{table}/structure", a.structure)
 				r.Get("/databases/{database}/tables/{table}/data", a.tableData)
 				r.Post("/query", a.query)
+				r.Post("/rows/update", a.updateRow)
 				r.Post("/query/cancel", a.cancelQuery)
 				r.Get("/transaction", a.transactionStatus)
 				r.Post("/transaction/commit", a.commitTransaction)
@@ -404,6 +419,67 @@ type queryRequest struct {
 	SkipHistory bool   `json:"skipHistory"`
 }
 
+type rowUpdateRequest struct {
+	Database string         `json:"database"`
+	Table    string         `json:"table"`
+	Original map[string]any `json:"original"`
+	Changes  map[string]any `json:"changes"`
+}
+
+func (a *API) updateRow(w http.ResponseWriter, r *http.Request) {
+	var req rowUpdateRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	if err := database.ValidateIdentifier(req.Database); err != nil {
+		fail(w, err)
+		return
+	}
+	if err := database.ValidateIdentifier(req.Table); err != nil {
+		fail(w, err)
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err := a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	p, err := a.providers.Get(c.Driver)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	updater, ok := p.(database.RowUpdater)
+	if !ok {
+		fail(w, fmt.Errorf("inline updates are not supported by %s", c.Driver))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	var result *models.QueryResult
+	if c.Environment == "production" {
+		result, err = updater.UpdateRowInTransaction(ctx, c, req.Database, req.Table, req.Original, req.Changes)
+	} else {
+		result, err = updater.UpdateRow(ctx, c, req.Database, req.Table, req.Original, req.Changes)
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if result.AffectedRows == 0 {
+		fail(w, fmt.Errorf("the row changed or could not be found; refresh and try again"))
+		return
+	}
+	if err := a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Inline update " + req.Database + "." + req.Table, Type: "UPDATE", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs, AffectedRows: result.AffectedRows}); err != nil {
+		a.log.Error("could not store inline update history", "error", err)
+	}
+	respond(w, http.StatusOK, result)
+}
+
 func (a *API) query(w http.ResponseWriter, r *http.Request) {
 	var req queryRequest
 	if err := decode(w, r, &req); err != nil {
@@ -520,7 +596,7 @@ func (a *API) commitTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
 	defer cancel()
-	status, err := transactional.CommitTransaction(ctx, c)
+	status, err := transactional.CommitTransaction(ctx, c, nil)
 	if err != nil {
 		fail(w, err)
 		return
@@ -541,10 +617,13 @@ func (a *API) rollbackTransaction(w http.ResponseWriter, r *http.Request) {
 	if transactional, ok := p.(database.TransactionalProvider); ok {
 		ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
 		defer cancel()
-		if err := transactional.RollbackTransaction(ctx, c); err != nil {
+		status, err := transactional.RollbackTransaction(ctx, c, nil)
+		if err != nil {
 			fail(w, err)
 			return
 		}
+		respond(w, http.StatusOK, status)
+		return
 	}
 	respond(w, http.StatusOK, models.TransactionStatus{})
 }
@@ -570,6 +649,84 @@ func (a *API) listHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, items)
+}
+
+func (a *API) listSavedQueries(w http.ResponseWriter, r *http.Request) {
+	queries, err := a.repo.ListSavedQueries(r.Context(), repository.LocalUserID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, queries)
+}
+func (a *API) saveSavedQuery(w http.ResponseWriter, r *http.Request) {
+	var query models.SavedQuery
+	if err := decode(w, r, &query); err != nil {
+		return
+	}
+	if id := chi.URLParam(r, "id"); id != "" {
+		query.ID = id
+	}
+	if strings.TrimSpace(query.ConnectionID) == "" || strings.TrimSpace(query.Name) == "" || strings.TrimSpace(query.SQL) == "" {
+		fail(w, fmt.Errorf("connection, name, and SQL are required"))
+		return
+	}
+	query, err := a.repo.SaveSavedQuery(r.Context(), query)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, query)
+}
+func (a *API) deleteSavedQuery(w http.ResponseWriter, r *http.Request) {
+	if err := a.repo.DeleteSavedQuery(r.Context(), repository.LocalUserID, chi.URLParam(r, "id")); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (a *API) listSmartQueries(w http.ResponseWriter, r *http.Request) {
+	queries, err := a.repo.ListSmartQueries(r.Context(), repository.LocalUserID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, queries)
+}
+func (a *API) saveSmartQuery(w http.ResponseWriter, r *http.Request) {
+	var query models.WorkspaceSmartQuery
+	if err := decode(w, r, &query); err != nil {
+		return
+	}
+	if id := chi.URLParam(r, "id"); id != "" {
+		query.ID = id
+	}
+	if strings.TrimSpace(query.ConnectionID) == "" || strings.TrimSpace(query.Title) == "" || strings.TrimSpace(query.Description) == "" || strings.TrimSpace(query.SQL) == "" {
+		fail(w, fmt.Errorf("connection, title, description, and SQL are required"))
+		return
+	}
+	if query.Parameters == nil {
+		query.Parameters = []models.SmartQueryParam{}
+	}
+	for _, parameter := range query.Parameters {
+		if strings.TrimSpace(parameter.Key) == "" {
+			fail(w, fmt.Errorf("smart query parameter keys are required"))
+			return
+		}
+	}
+	query, err := a.repo.SaveSmartQuery(r.Context(), query)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, query)
+}
+func (a *API) deleteSmartQuery(w http.ResponseWriter, r *http.Request) {
+	if err := a.repo.DeleteSmartQuery(r.Context(), repository.LocalUserID, chi.URLParam(r, "id")); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type aiSettingsRequest struct {
@@ -648,20 +805,53 @@ func (a *API) saveBackupSettings(w http.ResponseWriter, r *http.Request) {
 func (a *API) createBackup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
-	if err := a.backup.Create(ctx); err != nil {
+	backup, err := a.backup.Create(ctx)
+	if err != nil {
 		fail(w, err)
 		return
 	}
-	respond(w, http.StatusOK, map[string]bool{"backedUp": true})
+	respond(w, http.StatusOK, backup)
 }
+func (a *API) listBackups(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	backups, err := a.backup.List(ctx)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, backups)
+}
+
+type backupItemRequest struct {
+	Key string `json:"key"`
+}
+
 func (a *API) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	var in backupItemRequest
+	if err := decode(w, r, &in); err != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
-	if err := a.backup.Restore(ctx); err != nil {
+	if err := a.backup.Restore(ctx, in.Key); err != nil {
 		fail(w, err)
 		return
 	}
 	respond(w, http.StatusOK, map[string]bool{"restored": true})
+}
+func (a *API) deleteBackup(w http.ResponseWriter, r *http.Request) {
+	var in backupItemRequest
+	if err := decode(w, r, &in); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := a.backup.Delete(ctx, in.Key); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (a *API) listAIModels(w http.ResponseWriter, r *http.Request) {
 	var in aiSettingsRequest
@@ -1387,7 +1577,7 @@ func (a *API) rollbackPendingTransaction(ctx context.Context, id string) {
 		return
 	}
 	if transactional, ok := p.(database.TransactionalProvider); ok {
-		_ = transactional.RollbackTransaction(ctx, c)
+		_, _ = transactional.RollbackTransaction(ctx, c, nil)
 	}
 }
 func decode(w http.ResponseWriter, r *http.Request, dst any) error {

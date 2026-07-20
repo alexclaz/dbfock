@@ -136,6 +136,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     connections.value = (await api<Connection[]>('/connections')) ?? []
     if (!connections.value.some((connection) => connection.id === activeConnectionId.value)) activeConnectionId.value = connections.value[0]?.id
   }
+  async function reloadWorkspaceQueries() {
+    const [saved, smart] = await Promise.all([api<SavedQuery[]>('/saved-queries'), api<SmartQuery[]>('/smart-queries')])
+    savedQueries.value = saved ?? []
+    smartQueries.value = smart ?? []
+  }
+  async function syncWorkspaceQueries() {
+    const localSaved = [...savedQueries.value]
+    const localSmart = [...smartQueries.value]
+    const [remoteSaved, remoteSmart] = await Promise.all([api<SavedQuery[]>('/saved-queries'), api<SmartQuery[]>('/smart-queries')])
+    if (remoteSaved.length === 0 && localSaved.length > 0) await Promise.all(localSaved.map((query) => api<SavedQuery>('/saved-queries', { method: 'POST', body: query })))
+    if (remoteSmart.length === 0 && localSmart.length > 0) await Promise.all(localSmart.map((query) => api<SmartQuery>('/smart-queries', { method: 'POST', body: query })))
+    await reloadWorkspaceQueries()
+  }
   async function connectConnection(id: string) {
     try { await api(`/connections/${id}/connect`, { method: 'POST' }) }
     finally { await refreshConnections() }
@@ -188,41 +201,47 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!tab) return
     tabs.value.splice(from < to ? to - 1 : to, 0, tab)
   }
-  function saveQuery(query: Omit<SavedQuery, 'id' | 'updatedAt'>, id?: string) {
+  async function saveQuery(query: Omit<SavedQuery, 'id' | 'updatedAt'>, id?: string) {
     const existing = id ? savedQueries.value.findIndex((item) => item.id === id) : -1
-    const saved: SavedQuery = { id: existing >= 0 ? id! : `saved:${Date.now()}`, ...query, updatedAt: new Date().toISOString() }
+    const draft: SavedQuery = { id: existing >= 0 ? id! : `saved:${Date.now()}`, ...query, updatedAt: new Date().toISOString() }
+    const saved = await api<SavedQuery>('/saved-queries', { method: 'POST', body: draft })
     if (existing >= 0) savedQueries.value.splice(existing, 1, saved)
     else savedQueries.value.unshift(saved)
     return saved
   }
-  function removeSavedQuery(id: string) {
+  async function removeSavedQuery(id: string) {
+    await api(`/saved-queries/${encodeURIComponent(id)}`, { method: 'DELETE' })
     savedQueries.value = savedQueries.value.filter((query) => query.id !== id)
     tabs.value.forEach((tab) => {
       if (tab.savedQueryId === id) tab.savedQueryId = undefined
     })
   }
-  function addSmartQuery(query: Omit<SmartQuery, 'id' | 'createdAt'>) {
+  async function addSmartQuery(query: Omit<SmartQuery, 'id' | 'createdAt'>) {
     const existing = smartQueries.value.find((item) => item.connectionId === query.connectionId && (item.sourceSql || item.sql) === (query.sourceSql || query.sql))
     if (existing) return existing
-    const smart = { id: `smart:${Date.now()}`, ...query, createdAt: new Date().toISOString() }
+    const draft: SmartQuery = { id: `smart:${Date.now()}`, ...query, createdAt: new Date().toISOString() }
+    const smart = await api<SmartQuery>('/smart-queries', { method: 'POST', body: draft })
     smartQueries.value.unshift(smart)
     return smart
   }
-  function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>) {
+  async function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>) {
     const index = smartQueries.value.findIndex((query) => query.id === id)
     if (index < 0) return
     const current = smartQueries.value[index]
     if (!current) return
     const parameterByKey = new Map(current.parameters.map((parameter) => [parameter.key, parameter]))
     const keys = [...changes.sql.matchAll(/:([A-Za-z][A-Za-z0-9_]*)\b/g)].flatMap((match) => match[1] ? [match[1]] : []).filter((key, position, all) => all.indexOf(key) === position)
-    smartQueries.value.splice(index, 1, {
+    const updated: SmartQuery = {
       ...current,
       ...changes,
       parameters: keys.map((key) => parameterByKey.get(key) || { key, defaultValue: '' }),
-    })
+    }
+    const smart = await api<SmartQuery>('/smart-queries', { method: 'POST', body: updated })
+    smartQueries.value.splice(index, 1, smart)
   }
-  function removeSmartQuery(id: string) {
+  async function removeSmartQuery(id: string) {
+    await api(`/smart-queries/${encodeURIComponent(id)}`, { method: 'DELETE' })
     smartQueries.value = smartQueries.value.filter((query) => query.id !== id)
   }
-  return { connections, activeConnectionId, activeConnection, tabs, activeTabId, savedQueries, smartQueries, refreshConnections, connectConnection, disconnectConnection, revalidateConnection, openTab, closeTabs, closeTab, closeTabsToRight, closeOtherTabs, moveTab, saveQuery, removeSavedQuery, addSmartQuery, updateSmartQuery, removeSmartQuery, restoreWorkspace }
+  return { connections, activeConnectionId, activeConnection, tabs, activeTabId, savedQueries, smartQueries, refreshConnections, reloadWorkspaceQueries, syncWorkspaceQueries, connectConnection, disconnectConnection, revalidateConnection, openTab, closeTabs, closeTab, closeTabsToRight, closeOtherTabs, moveTab, saveQuery, removeSavedQuery, addSmartQuery, updateSmartQuery, removeSmartQuery, restoreWorkspace }
 })

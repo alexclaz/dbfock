@@ -1,5 +1,7 @@
 import type { QueryResult } from '~/types/database'
 
+export type QueryRowUpdate = { original: Record<string, unknown>; changes: Record<string, unknown> }
+
 function valueForExport(value: unknown) {
   if (value === null || value === undefined) return ''
   if (typeof value === 'bigint') return value.toString()
@@ -30,4 +32,20 @@ export function queryResultAsTSV(result?: QueryResult) {
   const headers = columns.map((column) => valueForExport(column.name)).join('\t')
   const rows = (result.rows ?? []).map((row) => columns.map((column) => valueForExport(row[column.name]).replaceAll('\t', ' ').replaceAll('\r', ' ').replaceAll('\n', ' ')).join('\t'))
   return [headers, ...rows].join('\n')
+}
+
+function sameValue(left: unknown, right: unknown) {
+  if (Object.is(left, right)) return true
+  try { return JSON.stringify(left) === JSON.stringify(right) }
+  catch { return false }
+}
+
+export function queryResultEdits(original: QueryResult, edited: QueryResult): QueryRowUpdate[] {
+  if (original.rows.length !== edited.rows.length) throw new Error('Adding or removing rows is not supported by inline editing.')
+  return edited.rows.flatMap((row, index) => {
+    const previous = original.rows[index]
+    if (!previous) return []
+    const changes = Object.fromEntries(Object.entries(row).filter(([column, value]) => !sameValue(previous[column], value)))
+    return Object.keys(changes).length ? [{ original: previous, changes }] : []
+  })
 }

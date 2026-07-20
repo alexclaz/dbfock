@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -186,7 +187,17 @@ func (r *Repository) UpdateConnection(ctx context.Context, c models.Connection) 
 	return c, nil
 }
 func (r *Repository) DeleteConnection(ctx context.Context, userID, id string) error {
-	res, err := r.db.ExecContext(ctx, "DELETE FROM connections WHERE id=? AND user_id=?", id, userID)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"query_history", "saved_queries", "smart_queries"} {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+quoteIdentifier(table)+" WHERE user_id=? AND connection_id=?", userID, id); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, "DELETE FROM connections WHERE id=? AND user_id=?", id, userID)
 	if err != nil {
 		return err
 	}
@@ -197,7 +208,7 @@ func (r *Repository) DeleteConnection(ctx context.Context, userID, id string) er
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 func (r *Repository) AddHistory(ctx context.Context, h models.QueryHistory) error {
 	newID, err := id()
@@ -296,6 +307,80 @@ func (r *Repository) ConnectionCount(ctx context.Context, userID string) (int, e
 }
 func (r *Repository) DeleteHistory(ctx context.Context, userID, id string) error {
 	_, err := r.db.ExecContext(ctx, "DELETE FROM query_history WHERE id=? AND user_id=?", id, userID)
+	return err
+}
+func (r *Repository) ListSavedQueries(ctx context.Context, userID string) ([]models.SavedQuery, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id,user_id,connection_id,name,sql_text,updated_at FROM saved_queries WHERE user_id=? ORDER BY updated_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	queries := []models.SavedQuery{}
+	for rows.Next() {
+		var query models.SavedQuery
+		if err := rows.Scan(&query.ID, &query.UserID, &query.ConnectionID, &query.Name, &query.SQL, &query.UpdatedAt); err != nil {
+			return nil, err
+		}
+		queries = append(queries, query)
+	}
+	return queries, rows.Err()
+}
+func (r *Repository) SaveSavedQuery(ctx context.Context, query models.SavedQuery) (models.SavedQuery, error) {
+	query.UserID = LocalUserID
+	if query.ID == "" {
+		var err error
+		if query.ID, err = id(); err != nil {
+			return query, err
+		}
+	}
+	query.UpdatedAt = time.Now().UTC()
+	_, err := r.db.ExecContext(ctx, `INSERT INTO saved_queries (id,user_id,connection_id,name,sql_text,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET connection_id=excluded.connection_id,name=excluded.name,sql_text=excluded.sql_text,updated_at=excluded.updated_at`, query.ID, query.UserID, query.ConnectionID, query.Name, query.SQL, query.UpdatedAt)
+	return query, err
+}
+func (r *Repository) DeleteSavedQuery(ctx context.Context, userID, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM saved_queries WHERE id=? AND user_id=?`, id, userID)
+	return err
+}
+func (r *Repository) ListSmartQueries(ctx context.Context, userID string) ([]models.WorkspaceSmartQuery, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id,user_id,connection_id,title,description,sql_text,source_sql,parameters_json,created_at FROM smart_queries WHERE user_id=? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	queries := []models.WorkspaceSmartQuery{}
+	for rows.Next() {
+		var query models.WorkspaceSmartQuery
+		var parameters string
+		if err := rows.Scan(&query.ID, &query.UserID, &query.ConnectionID, &query.Title, &query.Description, &query.SQL, &query.SourceSQL, &parameters, &query.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(parameters), &query.Parameters); err != nil {
+			return nil, fmt.Errorf("decode smart query %s parameters: %w", query.ID, err)
+		}
+		queries = append(queries, query)
+	}
+	return queries, rows.Err()
+}
+func (r *Repository) SaveSmartQuery(ctx context.Context, query models.WorkspaceSmartQuery) (models.WorkspaceSmartQuery, error) {
+	query.UserID = LocalUserID
+	if query.ID == "" {
+		var err error
+		if query.ID, err = id(); err != nil {
+			return query, err
+		}
+	}
+	if query.CreatedAt.IsZero() {
+		query.CreatedAt = time.Now().UTC()
+	}
+	parameters, err := json.Marshal(query.Parameters)
+	if err != nil {
+		return query, err
+	}
+	_, err = r.db.ExecContext(ctx, `INSERT INTO smart_queries (id,user_id,connection_id,title,description,sql_text,source_sql,parameters_json,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET connection_id=excluded.connection_id,title=excluded.title,description=excluded.description,sql_text=excluded.sql_text,source_sql=excluded.source_sql,parameters_json=excluded.parameters_json`, query.ID, query.UserID, query.ConnectionID, query.Title, query.Description, query.SQL, query.SourceSQL, string(parameters), query.CreatedAt)
+	return query, err
+}
+func (r *Repository) DeleteSmartQuery(ctx context.Context, userID, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM smart_queries WHERE id=? AND user_id=?`, id, userID)
 	return err
 }
 func (r *Repository) GetAISetting(ctx context.Context, userID string) (models.AISetting, error) {

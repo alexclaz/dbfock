@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { Connection, QueryHistory, QueryResult, SavedQuery, SmartQuery, TransactionStatus, WorkspaceTab } from '~/types/database'
-import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV } from '~/utils/queryResult'
+import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits } from '~/utils/queryResult'
+
+type EditableResultSource = { connectionId: string; database: string; table: string }
 
 type ResultTab = {
   id: string
@@ -8,6 +10,8 @@ type ResultTab = {
   result?: QueryResult
   view: 'table' | 'json' | 'csv'
   copied: boolean
+  editing: boolean
+  source?: EditableResultSource
 }
 type SmartResultTab = ResultTab & { connectionId: string }
 type AISettings = { configured: boolean }
@@ -28,6 +32,7 @@ const history = ref<QueryHistory[]>([])
 const selectedSavedQueryId = ref('')
 const sqlEditor = ref<{ insertSQL: (sql: string) => void }>()
 const aiAgent = ref<{ ask: (prompt: string) => Promise<void>; pasteQuery: (sql: string) => void }>()
+const resultGrid = ref<{ save: () => boolean; cancel: () => void; canSave: boolean }>()
 const aiConfigured = ref(false)
 const aiVisible = ref(true)
 const editorHeight = ref(46)
@@ -70,7 +75,7 @@ const activeSmartQueryError = computed(() => smartQueryErrorConnectionId.value =
 
 onMounted(async () => {
   workspace.restoreWorkspace()
-  try { await Promise.all([loadAISettings(), workspace.refreshConnections()]); await Promise.all(workspace.connections.filter((connection) => connection.environment === 'production').map((connection) => loadTransactionStatus(connection.id))); await loadHistory() }
+  try { await Promise.all([loadAISettings(), workspace.refreshConnections(), workspace.syncWorkspaceQueries()]); await Promise.all(workspace.connections.filter((connection) => connection.environment === 'production').map((connection) => loadTransactionStatus(connection.id))); await loadHistory() }
   catch (error: any) { queryError.value = error.message }
 })
 
@@ -110,22 +115,22 @@ function openSmartQueryById(id: string) {
 async function removeSavedQuery(id: string) {
   const query = workspace.savedQueries.find((item) => item.id === id)
   if (!query || !await confirmAction({ title: t('savedQueries.deleteTitle'), description: t('savedQueries.deleteConfirm', { name: query.name }), confirmLabel: t('savedQueries.delete'), tone: 'danger' })) return
-  workspace.removeSavedQuery(id)
+  await workspace.removeSavedQuery(id)
 }
 async function removeSmartQuery(id: string) {
   const query = workspace.smartQueries.find((item) => item.id === id)
   if (!query || !await confirmAction({ title: t('smartQueries.deleteTitle'), description: t('smartQueries.deleteConfirm', { name: query.title }), confirmLabel: t('smartQueries.delete'), tone: 'danger' })) return
-  workspace.removeSmartQuery(id)
+  await workspace.removeSmartQuery(id)
 }
 function savedQueryLabel(query: SavedQuery) {
   const connection = workspace.connections.find((item) => item.id === query.connectionId)
   return `${query.name} · ${connection?.name || t('savedQueries.connectionUnavailable')}`
 }
 
-function persistQuery(tab: WorkspaceTab, name: string) {
+async function persistQuery(tab: WorkspaceTab, name: string) {
   const connectionId = tab.executionConnectionId === 'auto' ? tab.connectionId : tab.executionConnectionId ?? tab.connectionId
   if (!connectionId || !tab.sql?.trim()) return false
-  const query = workspace.saveQuery({ name: name.trim(), connectionId, sql: tab.sql }, tab.savedQueryId)
+  const query = await workspace.saveQuery({ name: name.trim(), connectionId, sql: tab.sql }, tab.savedQueryId)
   tab.title = query.name
   tab.savedQueryId = query.id
   tab.dirty = false
@@ -133,14 +138,14 @@ function persistQuery(tab: WorkspaceTab, name: string) {
 }
 function saveQuery(tab = activeTab.value): Promise<boolean> {
   if (tab.type !== 'sql' || !(tab.executionConnectionId === 'auto' ? tab.connectionId : tab.executionConnectionId ?? tab.connectionId) || !tab.sql?.trim()) return Promise.resolve(false)
-  if (tab.savedQueryId) return Promise.resolve(persistQuery(tab, tab.title))
+  if (tab.savedQueryId) return persistQuery(tab, tab.title)
   return new Promise((resolve) => { pendingSave.value = { tab, resolve } })
 }
-function resolveSave(name?: string) {
+async function resolveSave(name?: string) {
   const pending = pendingSave.value
   if (!pending) return
   pendingSave.value = undefined
-  pending.resolve(name ? persistQuery(pending.tab, name) : false)
+  pending.resolve(name ? await persistQuery(pending.tab, name) : false)
 }
 function confirmAction(options: Omit<PendingConfirmation, 'resolve'>) {
   return new Promise<boolean>((resolve) => { pendingConfirmation.value = { ...options, resolve } })
@@ -198,7 +203,7 @@ async function connect() {
 
 function createResultTab(workspaceTabId: string) {
   const tabs = resultTabs[workspaceTabId] || (resultTabs[workspaceTabId] = [])
-  const resultTab: ResultTab = { id: `result:${workspaceTabId}:${Date.now()}:${nextResultTabId++}`, title: t('query.resultTab', { count: tabs.length + 1 }), view: 'table', copied: false }
+  const resultTab: ResultTab = { id: `result:${workspaceTabId}:${Date.now()}:${nextResultTabId++}`, title: t('query.resultTab', { count: tabs.length + 1 }), view: 'table', copied: false, editing: false }
   tabs.push(resultTab)
   activeResultTabIds[workspaceTabId] = resultTab.id
   return resultTab
@@ -232,6 +237,7 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
     const pageable = /^\s*select\b/i.test(sql)
     const result = await api<QueryResult>(`/connections/${connectionId}/query`, { method: 'POST', body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId: resultTab.id } : { sql, requestId: resultTab.id } })
     resultTab.result = pageable ? pageResult(result) : result
+    resultTab.source = editableSource(sql, connection)
     if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId: resultTab.id }
     transactionStatus[connectionId] = { pending: resultTab.result.transactionPending, pendingStatements: resultTab.result.pendingStatements }
     await loadHistory()
@@ -246,7 +252,7 @@ async function createSmartQuery(connectionId: string, sql: string) {
   smartQueryGenerations.add(generationKey)
   try {
     const query = await api<Omit<SmartQuery, 'id' | 'createdAt'>>('/ai/smart-queries', { method: 'POST', body: { connectionId, sql } })
-    const smartQuery = workspace.addSmartQuery({ ...query, connectionId, sourceSql })
+    const smartQuery = await workspace.addSmartQuery({ ...query, connectionId, sourceSql })
     notifySuccess(t('smartQueries.created', { name: smartQuery.title }))
   } catch (error: any) { queryError.value = t('smartQueries.createError', { message: error.message || t('smartQueries.unknownError') }) }
   finally { smartQueryGenerations.delete(generationKey) }
@@ -269,7 +275,7 @@ function smartQuerySQL(query: SmartQuery, values: Record<string, string>) {
 }
 function createSmartResultTab(connectionId: string, title: string) {
   const tabsForConnection = smartResultTabs.filter((tab) => tab.connectionId === connectionId)
-  const resultTab: SmartResultTab = { id: `smart-result:${connectionId}:${Date.now()}:${nextResultTabId++}`, title: title || t('query.resultTab', { count: tabsForConnection.length + 1 }), connectionId, view: 'table', copied: false }
+  const resultTab: SmartResultTab = { id: `smart-result:${connectionId}:${Date.now()}:${nextResultTabId++}`, title: title || t('query.resultTab', { count: tabsForConnection.length + 1 }), connectionId, view: 'table', copied: false, editing: false }
   smartResultTabs.push(resultTab)
   activeSmartResultTabIds[connectionId] = resultTab.id
   return resultTab
@@ -297,6 +303,10 @@ function setSmartResultView(id: string, view: ResultTab['view']) {
 async function copySmartResult(id: string) {
   const tab = smartResultTabs.find((item) => item.id === id)
   if (tab) await copyResult(tab)
+}
+async function saveSmartResultEdits(id: string, edited: QueryResult) {
+  const tab = smartResultTabs.find((item) => item.id === id)
+  if (tab) await saveResultEdits(tab, edited)
 }
 async function loadMoreSmartRows() {
   const id = activeSmartResultTabId.value
@@ -333,13 +343,14 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
     const pageable = /^\s*select\b/i.test(sql)
     const result = await api<QueryResult>(`/connections/${query.connectionId}/query`, { method: 'POST', body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId: resultTab.id } : { sql, requestId: resultTab.id } })
     resultTab.result = pageable ? pageResult(result) : result
+    resultTab.source = editableSource(sql, connection)
     if (pageable) pagedQueries[resultTab.id] = { connectionId: query.connectionId, sql, requestId: resultTab.id }
     transactionStatus[query.connectionId] = { pending: resultTab.result.transactionPending, pendingStatements: resultTab.result.pendingStatements }
     await loadHistory()
   } catch (error: any) { smartQueryError.value = error.message }
   finally { smartQueryRunning.value = false }
 }
-function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>) { workspace.updateSmartQuery(id, changes) }
+async function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>) { await workspace.updateSmartQuery(id, changes) }
 function openSmartQueryInEditor(query: SmartQuery) {
   workspace.activeConnectionId = query.connectionId
   workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: query.title, type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql })
@@ -353,6 +364,30 @@ function pageResult(result: QueryResult): QueryResult {
   const hasMore = result.rows.length > queryPageSize
   const rows = result.rows.slice(0, queryPageSize)
   return { ...result, rows, rowCount: rows.length, hasMore }
+}
+function editableSource(sql: string, connection: Connection): EditableResultSource | undefined {
+  if (!/^\s*select\b/i.test(sql) || /\b(join|union|intersect|except)\b/i.test(sql)) return
+  const match = sql.match(/\bfrom\s+((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*))?)/i)
+  if (!match) return
+  const source = match[1]
+  if (!source) return
+  const parts = source.split('.').map((part) => part.trim().replace(/^`|`$/g, ''))
+  const database = parts.length === 2 ? parts[0] : connection.initialDatabase
+  const table = parts.length === 2 ? parts[1] : parts[0]
+  if (!database || !table) return
+  return { connectionId: connection.id, database, table }
+}
+async function saveResultEdits(resultTab: ResultTab, edited: QueryResult) {
+  if (!resultTab.result || !resultTab.source) { notifyError(t('grid.inlineEditUnsupported')); return }
+  try {
+    const updates = queryResultEdits(resultTab.result, edited)
+    let transaction: QueryResult | undefined
+    for (const update of updates) transaction = await api<QueryResult>(`/connections/${resultTab.source.connectionId}/rows/update`, { method: 'POST', body: { database: resultTab.source.database, table: resultTab.source.table, ...update } })
+    resultTab.result = edited
+    resultTab.editing = false
+    if (transaction) transactionStatus[resultTab.source.connectionId] = { pending: transaction.transactionPending, pendingStatements: transaction.pendingStatements }
+    await loadHistory()
+  } catch (error: any) { notifyError(error.message) }
 }
 async function copyResult(resultTab: ResultTab) {
   if (!resultTab.result || !navigator.clipboard) return
@@ -542,7 +577,7 @@ watch(() => workspace.activeConnectionId, () => {
           </div>
         </div>
         <SavedQueriesWorkspace v-else-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
-        <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @set-result-view="setSmartResultView" @copy-result="copySmartResult" @load-more="loadMoreSmartRows" />
+        <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @set-result-view="setSmartResultView" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
         <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :tab-id="activeTab.id" :connection-id="activeTab.connectionId!" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" :database="activeTab.database!" :table="activeTab.table!" :model-value="activeTab.sql" :active-section="activeTab.tableSection" :ai-configured="aiConfigured" @update:model-value="updateSQL" @update:active-section="updateTableSection" @status="updateAIStatus" />
         <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
         <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" />
@@ -555,8 +590,8 @@ watch(() => workspace.activeConnectionId, () => {
           </div>
           <div class="h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-accent" @pointerdown="resizeVertical" />
           <div v-if="activeResultTabs.length" class="flex h-9 items-end gap-1 overflow-x-auto border-b border-line bg-panel px-2"><button v-for="resultTab in activeResultTabs" :key="resultTab.id" type="button" class="group flex h-8 shrink-0 items-center gap-1 rounded-t px-2 text-xs" :class="activeResultTab?.id === resultTab.id ? 'bg-canvas font-medium text-ink' : 'text-muted hover:bg-canvas/60'" @click="activeResultTabIds[activeTab.id] = resultTab.id"><span>{{ resultTab.title }}</span><span class="rounded px-1 opacity-0 group-hover:opacity-100 hover:bg-line" :aria-label="t('common.close')" @click.stop="closeResultTab(activeTab.id, resultTab.id)">×</span></button><button type="button" class="mb-1 grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:bg-canvas hover:text-ink" :title="t('query.newResultTab')" :aria-label="t('query.newResultTab')" @click="createResultTab(activeTab.id)">+</button></div>
-          <div class="flex items-center justify-between border-b border-line px-4 py-2 text-xs text-muted"><span v-if="activeResultTab?.result">{{ t('query.rows', { count: `${activeResultTab.result.rowCount}${activeResultTab.result.hasMore ? '+' : ''}` }) }} · {{ activeResultTab.result.executionTimeMs }} ms · {{ t('query.affected', { count: activeResultTab.result.affectedRows }) }}</span><span v-else>{{ t('query.results') }}</span><div v-if="activeResultTab" class="flex items-center gap-2"><div class="flex rounded-md border border-line p-0.5"><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'table' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'table'" @click="activeResultTab.view = 'table'">{{ t('grid.table') }}</button><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'json' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'json'" @click="activeResultTab.view = 'json'">JSON</button><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'csv' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'csv'" @click="activeResultTab.view = 'csv'">CSV</button></div><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink disabled:cursor-not-allowed disabled:opacity-50" :disabled="!activeResultTab.result" @click="copyResult(activeResultTab)">{{ activeResultTab.copied ? t('grid.copied') : t('grid.copy') }}</button></div></div>
-          <div class="min-h-0 flex-1"><DataGrid :result="activeResultTab?.result" :loading="running" :loading-more="loadingMoreRows" :view="activeResultTab?.view" @load-more="loadMoreRows" /></div>
+          <div class="flex items-center justify-between border-b border-line px-4 py-2 text-xs text-muted"><span v-if="activeResultTab?.result">{{ t('query.rows', { count: `${activeResultTab.result.rowCount}${activeResultTab.result.hasMore ? '+' : ''}` }) }} · {{ activeResultTab.result.executionTimeMs }} ms · {{ t('query.affected', { count: activeResultTab.result.affectedRows }) }}</span><span v-else>{{ t('query.results') }}</span><div v-if="activeResultTab" class="flex items-center gap-2"><div class="flex rounded-md border border-line p-0.5"><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'table' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'table'" @click="activeResultTab.view = 'table'">{{ t('grid.table') }}</button><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'json' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'json'" @click="activeResultTab.view = 'json'">JSON</button><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'csv' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'csv'" @click="activeResultTab.view = 'csv'">CSV</button></div><button v-if="!activeResultTab.editing" type="button" class="rounded-md border border-line px-2.5 py-1 text-ink disabled:cursor-not-allowed disabled:opacity-50" :title="!activeResultTab.source ? t('grid.inlineEditUnsupported') : undefined" :disabled="!activeResultTab.result || activeResultTab.view === 'csv' || !activeResultTab.source" @click="activeResultTab.editing = true">{{ t('grid.edit') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink disabled:cursor-not-allowed disabled:opacity-50" :disabled="!activeResultTab.result" @click="copyResult(activeResultTab)">{{ activeResultTab.copied ? t('grid.copied') : t('grid.copy') }}</button><template v-if="activeResultTab.editing"><button type="button" class="rounded-md bg-accent px-2.5 py-1 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50" :disabled="!resultGrid?.canSave" @click="resultGrid?.save()">{{ t('grid.save') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink" @click="resultGrid?.cancel()">{{ t('grid.cancel') }}</button></template></div></div>
+          <div class="min-h-0 flex-1"><DataGrid ref="resultGrid" :result="activeResultTab?.result" :loading="running" :loading-more="loadingMoreRows" :view="activeResultTab?.view" :editing="activeResultTab?.editing" :editable="Boolean(activeResultTab?.source)" @load-more="loadMoreRows" @start-edit="activeResultTab && (activeResultTab.editing = true)" @save="activeResultTab && saveResultEdits(activeResultTab, $event)" @cancel="activeResultTab && (activeResultTab.editing = false)" /></div>
         </div>
       </div>
       <div class="border-t border-line bg-panel px-4 py-2"><details><summary class="cursor-pointer text-xs font-medium text-muted">{{ t('query.history', { count: history.length }) }}</summary><div class="scrollbar mt-2 max-h-28 overflow-auto"><button v-for="item in history" :key="item.id" class="block w-full truncate py-1 text-left font-mono text-xs text-muted hover:text-ink" @click="workspace.openTab({ id: `sql:${item.connectionId}:${Date.now()}`, title: t('query.historyTitle'), type: 'sql', connectionId: item.connectionId, executionConnectionId: item.connectionId, sql: item.sql })">{{ item.status === 'error' ? '✕' : '✓' }} {{ item.sql }}</button></div></details></div>

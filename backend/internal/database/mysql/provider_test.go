@@ -52,6 +52,20 @@ func TestNewQueryResultSerializesEmptyCollections(t *testing.T) {
 	}
 }
 
+func TestUpdateRowStatementUsesParametersAndNullSafeOriginalValues(t *testing.T) {
+	statement, args, err := updateRowStatement("app", "users", map[string]any{"id": 7, "nickname": nil}, map[string]any{"name": "Ana"})
+	if err != nil {
+		t.Fatalf("updateRowStatement() error = %v", err)
+	}
+	want := "UPDATE `app`.`users` SET `name`=? WHERE `id` <=> ? AND `nickname` <=> ? LIMIT 1"
+	if statement != want {
+		t.Fatalf("statement = %q, want %q", statement, want)
+	}
+	if len(args) != 3 || args[0] != "Ana" || args[1] != 7 || args[2] != nil {
+		t.Fatalf("args = %#v, want parameterized changed and original values", args)
+	}
+}
+
 func TestLimitSelectRows(t *testing.T) {
 	got := limitSelectRows(" SELECT id FROM users; ", 200)
 	want := "SELECT * FROM (SELECT id FROM users) AS `dbfock_result` LIMIT 201"

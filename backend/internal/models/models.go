@@ -38,6 +38,14 @@ func (c Connection) Public(status string) ConnectionResponse {
 type TransactionStatus struct {
 	Pending           bool `json:"pending"`
 	PendingStatements int  `json:"pendingStatements"`
+	Statements        []PendingTransactionStatement `json:"statements"`
+}
+
+// PendingTransactionStatement is a mutation staged in the production transaction.
+// Its ID is valid only while the transaction remains pending.
+type PendingTransactionStatement struct {
+	ID  string `json:"id"`
+	SQL string `json:"sql"`
 }
 
 type QueryHistory struct {
@@ -51,6 +59,25 @@ type QueryHistory struct {
 	ExecutionTimeMs int64     `json:"executionTimeMs"`
 	AffectedRows    int64     `json:"affectedRows"`
 	CreatedAt       time.Time `json:"createdAt"`
+}
+type SavedQuery struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"-"`
+	ConnectionID string    `json:"connectionId"`
+	Name         string    `json:"name"`
+	SQL          string    `json:"sql"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+type WorkspaceSmartQuery struct {
+	ID           string            `json:"id"`
+	UserID       string            `json:"-"`
+	ConnectionID string            `json:"connectionId"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description"`
+	SQL          string            `json:"sql"`
+	SourceSQL    string            `json:"sourceSql,omitempty"`
+	Parameters   []SmartQueryParam `json:"parameters"`
+	CreatedAt    time.Time         `json:"createdAt"`
 }
 type QueryDayStat struct {
 	Date    string `json:"date"`
@@ -184,6 +211,12 @@ type BackupSettingResponse struct {
 	HasAccessKey bool      `json:"hasAccessKey"`
 	HasSecret    bool      `json:"hasSecret"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type Backup struct {
+	Key       string    `json:"key"`
+	CreatedAt time.Time `json:"createdAt"`
+	Size      int64     `json:"size"`
 }
 
 type AIAuditLog struct {

@@ -6,7 +6,8 @@ export interface ColumnInfo { name: string; databaseType: string; columnType: st
 export interface TableStructure { columns: ColumnInfo[]; constraints: { name: string; type: string; columns: string[] }[]; indexes: { name: string; unique: boolean; columns: string[] }[]; foreignKeys: { name: string; column: string; referencedTable: string; referencedColumn: string }[]; references: { name: string; database: string; table: string; column: string; referencedColumn: string }[]; triggers: { name: string; timing: string; event: string; statement: string }[]; ddl: string }
 export interface QueryColumn { name: string; databaseType: string; nullable: boolean }
 export interface QueryResult { columns: QueryColumn[]; rows: Record<string, unknown>[]; rowCount: number; executionTimeMs: number; affectedRows: number; lastInsertId?: number; hasMore: boolean; transactionPending: boolean; pendingStatements: number }
-export interface TransactionStatus { pending: boolean; pendingStatements: number }
+export interface PendingTransactionStatement { id: string; sql: string }
+export interface TransactionStatus { pending: boolean; pendingStatements: number; statements: PendingTransactionStatement[] }
 export interface QueryHistory { id: string; connectionId: string; sql: string; type: string; status: 'success' | 'error'; errorMessage: string; executionTimeMs: number; affectedRows: number; createdAt: string }
 export interface ConnectionStats { savedConnectionCount: number; activeConnectionCount: number; totalQueries: number; successfulQueries: number; failedQueries: number; averageExecutionMs: number; affectedRows: number; lastQueryAt?: string; queriesByDay: { date: string; success: number; failed: number }[]; queriesByOperation: { operation: string; count: number }[]; schema: { available: boolean; databases: number; tables: number; error?: string } }
 export interface ConnectionMetadata { columns: string[]; rows: string[][] }

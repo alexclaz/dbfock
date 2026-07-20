@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,8 +22,12 @@ import (
 	"github.com/dbfock/database-manager/backend/internal/repository"
 )
 
-const objectKey = "dbfock/backup.sql"
-const maxBackupSize = 50 << 20
+const (
+	backupPrefix    = "dbfock/backups/"
+	legacyObjectKey = "dbfock/backup.sql"
+	maxBackupSize   = 50 << 20
+	maxBackups      = 5
+)
 
 type Service struct {
 	repo   *repository.Repository
@@ -68,39 +74,63 @@ func (s *Service) Save(ctx context.Context, endpoint, bucket, region, accessKey,
 	return setting, s.repo.SaveBackupSetting(ctx, setting)
 }
 
-func (s *Service) Create(ctx context.Context) error {
+func (s *Service) Create(ctx context.Context) (models.Backup, error) {
 	setting, accessKey, secret, err := s.credentials(ctx)
 	if err != nil {
-		return err
+		return models.Backup{}, err
 	}
 	script, err := s.repo.DumpSQL(ctx)
 	if err != nil {
-		return fmt.Errorf("create SQL backup: %w", err)
+		return models.Backup{}, fmt.Errorf("create SQL backup: %w", err)
 	}
 	if len(script) > maxBackupSize {
-		return fmt.Errorf("backup is larger than 50 MB")
+		return models.Backup{}, fmt.Errorf("backup is larger than 50 MB")
 	}
-	request, err := s.signedRequest(ctx, http.MethodPut, setting, accessKey, secret, bytes.NewReader([]byte(script)), "application/sql; charset=utf-8")
+	createdAt := time.Now().UTC()
+	key := backupPrefix + "backup-" + createdAt.Format("20060102T150405.000000000Z") + ".sql"
+	request, err := s.signedRequest(ctx, http.MethodPut, setting, accessKey, secret, key, nil, bytes.NewReader([]byte(script)), "application/sql; charset=utf-8")
 	if err != nil {
-		return err
+		return models.Backup{}, err
 	}
 	response, err := s.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("upload backup: %w", err)
+		return models.Backup{}, fmt.Errorf("upload backup: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= http.StatusMultipleChoices {
-		return s3Error("upload backup", response)
+		return models.Backup{}, s3Error("upload backup", response)
 	}
-	return nil
+	backups, err := s.list(ctx, setting, accessKey, secret)
+	if err != nil {
+		return models.Backup{}, err
+	}
+	if len(backups) > maxBackups {
+		for _, backup := range backups[maxBackups:] {
+			if err := s.delete(ctx, setting, accessKey, secret, backup.Key); err != nil {
+				return models.Backup{}, err
+			}
+		}
+	}
+	return models.Backup{Key: key, CreatedAt: createdAt, Size: int64(len(script))}, nil
 }
 
-func (s *Service) Restore(ctx context.Context) error {
+func (s *Service) List(ctx context.Context) ([]models.Backup, error) {
+	setting, accessKey, secret, err := s.credentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.list(ctx, setting, accessKey, secret)
+}
+
+func (s *Service) Restore(ctx context.Context, key string) error {
+	if !isBackupKey(key) {
+		return fmt.Errorf("select a valid backup")
+	}
 	setting, accessKey, secret, err := s.credentials(ctx)
 	if err != nil {
 		return err
 	}
-	request, err := s.signedRequest(ctx, http.MethodGet, setting, accessKey, secret, nil, "")
+	request, err := s.signedRequest(ctx, http.MethodGet, setting, accessKey, secret, key, nil, nil, "")
 	if err != nil {
 		return err
 	}
@@ -125,6 +155,96 @@ func (s *Service) Restore(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) Delete(ctx context.Context, key string) error {
+	if !isBackupKey(key) {
+		return fmt.Errorf("select a valid backup")
+	}
+	setting, accessKey, secret, err := s.credentials(ctx)
+	if err != nil {
+		return err
+	}
+	return s.delete(ctx, setting, accessKey, secret, key)
+}
+
+type listObjectsResponse struct {
+	IsTruncated           bool   `xml:"IsTruncated"`
+	NextContinuationToken string `xml:"NextContinuationToken"`
+	Contents              []struct {
+		Key          string `xml:"Key"`
+		LastModified string `xml:"LastModified"`
+		Size         int64  `xml:"Size"`
+	} `xml:"Contents"`
+}
+
+func (s *Service) list(ctx context.Context, setting models.BackupSetting, accessKey, secret string) ([]models.Backup, error) {
+	backups := []models.Backup{}
+	continuation := ""
+	for {
+		query := url.Values{"list-type": {"2"}, "prefix": {"dbfock/"}}
+		if continuation != "" {
+			query.Set("continuation-token", continuation)
+		}
+		request, err := s.signedRequest(ctx, http.MethodGet, setting, accessKey, secret, "", query, nil, "")
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.client.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("list backups: %w", err)
+		}
+		if response.StatusCode >= http.StatusMultipleChoices {
+			err := s3Error("list backups", response)
+			response.Body.Close()
+			return nil, err
+		}
+		var listed listObjectsResponse
+		err = xml.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&listed)
+		response.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read backup list: %w", err)
+		}
+		for _, object := range listed.Contents {
+			if !isBackupKey(object.Key) {
+				continue
+			}
+			createdAt, err := time.Parse(time.RFC3339, object.LastModified)
+			if err != nil {
+				return nil, fmt.Errorf("read backup timestamp: %w", err)
+			}
+			backups = append(backups, models.Backup{Key: object.Key, CreatedAt: createdAt, Size: object.Size})
+		}
+		if !listed.IsTruncated {
+			break
+		}
+		if listed.NextContinuationToken == "" {
+			return nil, fmt.Errorf("S3 backup list is truncated without a continuation token")
+		}
+		continuation = listed.NextContinuationToken
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i].CreatedAt.After(backups[j].CreatedAt) })
+	return backups, nil
+}
+
+func (s *Service) delete(ctx context.Context, setting models.BackupSetting, accessKey, secret, key string) error {
+	request, err := s.signedRequest(ctx, http.MethodDelete, setting, accessKey, secret, key, nil, nil, "")
+	if err != nil {
+		return err
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("delete backup: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusMultipleChoices {
+		return s3Error("delete backup", response)
+	}
+	return nil
+}
+
+func isBackupKey(key string) bool {
+	return key == legacyObjectKey || (strings.HasPrefix(key, backupPrefix) && strings.HasSuffix(key, ".sql") && !strings.Contains(key, ".."))
+}
+
 func (s *Service) credentials(ctx context.Context) (models.BackupSetting, string, string, error) {
 	setting, err := s.Get(ctx)
 	if err != nil {
@@ -144,12 +264,18 @@ func (s *Service) credentials(ctx context.Context) (models.BackupSetting, string
 	return setting, accessKey, secret, nil
 }
 
-func (s *Service) signedRequest(ctx context.Context, method string, setting models.BackupSetting, accessKey, secret string, body io.Reader, contentType string) (*http.Request, error) {
+func (s *Service) signedRequest(ctx context.Context, method string, setting models.BackupSetting, accessKey, secret, key string, query url.Values, body io.Reader, contentType string) (*http.Request, error) {
 	endpoint, err := parseEndpoint(setting.Endpoint)
 	if err != nil {
 		return nil, err
 	}
-	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + url.PathEscape(setting.Bucket) + "/" + objectKey
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + url.PathEscape(setting.Bucket) + "/"
+	if key != "" {
+		endpoint.Path += strings.Join(strings.FieldsFunc(key, func(r rune) bool { return r == '/' }), "/")
+	}
+	if query != nil {
+		endpoint.RawQuery = query.Encode()
+	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return nil, err

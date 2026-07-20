@@ -37,9 +37,16 @@ type Provider interface {
 // transaction open between query requests.
 type TransactionalProvider interface {
 	QueryInTransaction(context.Context, models.Connection, string, int, bool) (*models.QueryResult, error)
-	CommitTransaction(context.Context, models.Connection) (models.TransactionStatus, error)
-	RollbackTransaction(context.Context, models.Connection) error
+	CommitTransaction(context.Context, models.Connection, []string) (models.TransactionStatus, error)
+	RollbackTransaction(context.Context, models.Connection, []string) (models.TransactionStatus, error)
 	TransactionStatus(models.Connection) models.TransactionStatus
+}
+
+// RowUpdater is implemented by drivers that can safely update a row using its
+// original values as the optimistic-concurrency predicate.
+type RowUpdater interface {
+	UpdateRow(context.Context, models.Connection, string, string, map[string]any, map[string]any) (*models.QueryResult, error)
+	UpdateRowInTransaction(context.Context, models.Connection, string, string, map[string]any, map[string]any) (*models.QueryResult, error)
 }
 
 type Registry struct{ providers map[string]Provider }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -335,6 +336,97 @@ func (p *Provider) Query(ctx context.Context, c models.Connection, statement str
 	return p.run(ctx, c, statement, maxRows, nil)
 }
 
+// UpdateRow updates only changed columns. The original result values form the
+// WHERE predicate so a concurrently changed row is never overwritten silently.
+func (p *Provider) UpdateRow(ctx context.Context, c models.Connection, dbName, table string, original, changes map[string]any) (*models.QueryResult, error) {
+	statement, args, err := updateRowStatement(dbName, table, original, changes)
+	if err != nil {
+		return nil, err
+	}
+	return p.run(ctx, c, statement, 0, args)
+}
+
+func (p *Provider) UpdateRowInTransaction(ctx context.Context, c models.Connection, dbName, table string, original, changes map[string]any) (*models.QueryResult, error) {
+	statement, args, err := updateRowStatement(dbName, table, original, changes)
+	if err != nil {
+		return nil, err
+	}
+	p.transactionMu.Lock()
+	session := p.transactions[c.ID]
+	if session == nil {
+		db, openErr := p.open(c)
+		if openErr != nil {
+			p.transactionMu.Unlock()
+			return nil, openErr
+		}
+		tx, beginErr := beginTransaction(ctx, db)
+		if beginErr != nil {
+			db.Close()
+			p.transactionMu.Unlock()
+			return nil, beginErr
+		}
+		session = &transactionSession{db: db, tx: tx}
+		p.transactions[c.ID] = session
+	}
+	session.mu.Lock()
+	p.transactionMu.Unlock()
+	defer session.mu.Unlock()
+
+	result, err := p.runWithQueryer(ctx, statement, 0, args, session.tx)
+	if err == nil && result.AffectedRows > 0 {
+		session.pendingStatements++
+	}
+	if result != nil {
+		result.TransactionPending = session.pendingStatements > 0
+		result.PendingStatements = session.pendingStatements
+	}
+	return result, err
+}
+
+func updateRowStatement(dbName, table string, original, changes map[string]any) (string, []any, error) {
+	if len(original) == 0 || len(changes) == 0 {
+		return "", nil, fmt.Errorf("original row and changes are required")
+	}
+	qdb, err := database.QuoteIdentifier(dbName)
+	if err != nil {
+		return "", nil, err
+	}
+	qt, err := database.QuoteIdentifier(table)
+	if err != nil {
+		return "", nil, err
+	}
+	changeColumns, originalColumns := sortedKeys(changes), sortedKeys(original)
+	set := make([]string, 0, len(changeColumns))
+	where := make([]string, 0, len(originalColumns))
+	args := make([]any, 0, len(changeColumns)+len(originalColumns))
+	for _, column := range changeColumns {
+		quoted, quoteErr := database.QuoteIdentifier(column)
+		if quoteErr != nil {
+			return "", nil, quoteErr
+		}
+		set = append(set, quoted+"=?")
+		args = append(args, changes[column])
+	}
+	for _, column := range originalColumns {
+		quoted, quoteErr := database.QuoteIdentifier(column)
+		if quoteErr != nil {
+			return "", nil, quoteErr
+		}
+		where = append(where, quoted+" <=> ?")
+		args = append(args, original[column])
+	}
+	return "UPDATE " + qdb + "." + qt + " SET " + strings.Join(set, ", ") + " WHERE " + strings.Join(where, " AND ") + " LIMIT 1", args, nil
+}
+
+func sortedKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // QueryInTransaction executes a statement on the connection's pending manual
 // transaction. The transaction is intentionally kept open until commit or rollback.
 func (p *Provider) QueryInTransaction(ctx context.Context, c models.Connection, statement string, maxRows int, mutating bool) (*models.QueryResult, error) {
@@ -382,7 +474,7 @@ func (p *Provider) TransactionStatus(c models.Connection) models.TransactionStat
 	return models.TransactionStatus{Pending: session.pendingStatements > 0, PendingStatements: session.pendingStatements}
 }
 
-func (p *Provider) CommitTransaction(ctx context.Context, c models.Connection) (models.TransactionStatus, error) {
+func (p *Provider) CommitTransaction(ctx context.Context, c models.Connection, _ []string) (models.TransactionStatus, error) {
 	p.transactionMu.Lock()
 	session := p.transactions[c.ID]
 	if session == nil {
@@ -404,12 +496,12 @@ func (p *Provider) CommitTransaction(ctx context.Context, c models.Connection) (
 	return models.TransactionStatus{}, nil
 }
 
-func (p *Provider) RollbackTransaction(ctx context.Context, c models.Connection) error {
+func (p *Provider) RollbackTransaction(ctx context.Context, c models.Connection, _ []string) (models.TransactionStatus, error) {
 	p.transactionMu.Lock()
 	session := p.transactions[c.ID]
 	if session == nil {
 		p.transactionMu.Unlock()
-		return nil
+		return models.TransactionStatus{}, nil
 	}
 	session.mu.Lock()
 	err := session.tx.Rollback()
@@ -418,9 +510,9 @@ func (p *Provider) RollbackTransaction(ctx context.Context, c models.Connection)
 	session.mu.Unlock()
 	closeErr := session.db.Close()
 	if err != nil && err != sql.ErrTxDone {
-		return err
+		return models.TransactionStatus{}, err
 	}
-	return closeErr
+	return models.TransactionStatus{}, closeErr
 }
 
 type queryer interface {

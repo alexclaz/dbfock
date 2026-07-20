@@ -10,6 +10,7 @@ type AISettings = { configured: boolean; provider?: Provider; model?: string; ba
 type AIAuditLog = { id: string; runId: string; question: string; stage: string; provider: string; model: string; request: string; response: string; error: string; createdAt: string }
 type AIAuditRun = { id: string; question: string; createdAt: string; logs: AIAuditLog[] }
 type BackupSettings = { configured: boolean; endpoint?: string; bucket?: string; region?: string; hasAccessKey?: boolean; hasSecret?: boolean }
+type BackupItem = { key: string; createdAt: string; size: number }
 type ConnectionExport = { version: number; connections: unknown[] }
 type ConnectionImportResult = { imported: number }
 type ConnectionImport = { name: string; driver: 'mysql'; host: string; port: number; username: string; initialDatabase: string; color: string; environment: 'development'; sslEnabled: boolean; timeoutSeconds: number }
@@ -76,6 +77,9 @@ const backupSuccess = ref('')
 const savingBackup = ref(false)
 const runningBackup = ref(false)
 const restoringBackup = ref(false)
+const deletingBackupKey = ref('')
+const backups = ref<BackupItem[]>([])
+const selectedBackupKey = ref('')
 const importInput = ref<HTMLInputElement>()
 const dbeaverImportInput = ref<HTMLInputElement>()
 const connectionTransferError = ref('')
@@ -138,6 +142,7 @@ async function loadBackupSettings() {
     if (!settings.configured) return
     backupForm.endpoint = settings.endpoint || ''; backupForm.bucket = settings.bucket || ''; backupForm.region = settings.region || ''; backupForm.accessKey = ''; backupForm.secret = ''
     hasSavedBackupAccessKey.value = Boolean(settings.hasAccessKey); hasSavedBackupSecret.value = Boolean(settings.hasSecret)
+    await loadBackups()
   } catch (cause: any) { backupError.value = cause.message || t('backup.loadError') }
 }
 async function saveBackupSettings() {
@@ -148,16 +153,28 @@ async function saveBackupSettings() {
 }
 async function createBackup() {
   backupError.value = ''; backupSuccess.value = ''; runningBackup.value = true
-  try { await api('/backup/create', { method: 'POST' }); backupSuccess.value = t('backup.created') }
+  try { await api('/backup/create', { method: 'POST' }); await loadBackups(); backupSuccess.value = t('backup.created') }
   catch (cause: any) { backupError.value = cause.message || t('backup.createError') }
   finally { runningBackup.value = false }
 }
 async function restoreBackup() {
+  if (!selectedBackupKey.value) { backupError.value = 'Escolha um backup para obter.'; return }
   if (!window.confirm(t('backup.restoreConfirm'))) return
   backupError.value = ''; backupSuccess.value = ''; restoringBackup.value = true
-  try { await api('/backup/restore', { method: 'POST' }); await workspace.refreshConnections(); backupSuccess.value = t('backup.restored') }
+  try { await api('/backup/restore', { method: 'POST', body: { key: selectedBackupKey.value } }); await Promise.all([workspace.refreshConnections(), workspace.reloadWorkspaceQueries()]); backupSuccess.value = t('backup.restored') }
   catch (cause: any) { backupError.value = cause.message || t('backup.restoreError') }
   finally { restoringBackup.value = false }
+}
+async function loadBackups() {
+  backups.value = (await api<BackupItem[]>('/backup/items')) ?? []
+  if (!backups.value.some((backup) => backup.key === selectedBackupKey.value)) selectedBackupKey.value = backups.value[0]?.key || ''
+}
+async function deleteBackup(key: string) {
+  if (!window.confirm('Excluir este backup do S3?')) return
+  backupError.value = ''; backupSuccess.value = ''; deletingBackupKey.value = key
+  try { await api('/backup/items', { method: 'DELETE', body: { key } }); await loadBackups() }
+  catch (cause: any) { backupError.value = cause.message || 'Não foi possível excluir o backup.' }
+  finally { deletingBackupKey.value = '' }
 }
 function selectSection(section: SettingsSection) { activeSection.value = section; if (section === 'audit') loadAuditLogs(); if (section === 'backup') loadBackupSettings() }
 function formatDate(value: string) { return new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
@@ -248,7 +265,37 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
 
           <form v-else-if="activeSection === 'ai'" class="max-w-xl" @submit.prevent="save"><h3 class="text-base font-semibold">{{ t('settings.aiAgent') }}</h3><p class="mt-1 text-sm text-muted">{{ t('ai.description') }}</p><div class="mt-6 grid gap-3"><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.provider') }}<AppSelect :model-value="form.provider" :options="providerOptions" @change="setProvider($event as Provider)" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.baseUrl') }}<input v-model="form.baseUrl" class="field" placeholder="https://api.example.com/v1" @input="scheduleModelLoad" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.apiKey') }} <span v-if="!apiKeyRequired" class="font-normal text-muted">{{ t('ai.optional') }}</span><input v-model="form.apiKey" class="field" type="password" autocomplete="off" :placeholder="hasSavedKey ? t('ai.savedKey') : apiKeyRequired ? selectedProvider.apiKeyHint : t('ai.noApiKey')" @input="scheduleModelLoad" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('ai.model') }}<input v-model="form.model" class="field" list="ai-models" :placeholder="t('ai.modelPlaceholder')" /><datalist id="ai-models"><option v-for="model in models" :key="model" :value="model" /></datalist><span v-if="loadingModels" class="text-xs font-normal text-muted">{{ t('ai.loadingModels') }}</span><span v-else-if="models.length" class="text-xs font-normal text-emerald-600">{{ t('ai.modelsAvailable', { count: models.length }) }}</span><span v-else-if="modelsError" class="text-xs font-normal text-rose-500">{{ modelsError }}</span><span v-else class="text-xs font-normal text-muted">{{ apiKeyRequired ? t('ai.modelsAfterKey') : t('ai.modelsOllama') }}</span></label></div><div class="mt-6 flex justify-end border-t border-line pt-4"><button class="rounded bg-accent px-3 py-2 text-white disabled:opacity-50" :disabled="saving">{{ saving ? t('common.saving') : t('common.save') }}</button></div></form>
 
-          <form v-else-if="activeSection === 'backup'" class="max-w-xl" @submit.prevent="saveBackupSettings"><h3 class="text-base font-semibold">{{ t('settings.backup') }}</h3><p class="mt-1 text-sm text-muted">{{ t('backup.description') }}</p><div class="mt-6 grid gap-3"><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.endpoint') }}<input v-model="backupForm.endpoint" class="field" type="url" placeholder="https://s3.us-east-1.amazonaws.com" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.bucket') }}<input v-model="backupForm.bucket" class="field" autocomplete="off" placeholder="my-dbfock-backups" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.region') }}<input v-model="backupForm.region" class="field" autocomplete="off" placeholder="us-east-1" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.accessKey') }}<input v-model="backupForm.accessKey" class="field" type="password" autocomplete="off" :placeholder="hasSavedBackupAccessKey ? t('backup.savedAccessKey') : 'AKIA…'" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('backup.secret') }}<input v-model="backupForm.secret" class="field" type="password" autocomplete="off" :placeholder="hasSavedBackupSecret ? t('backup.savedSecret') : '…'" /></label></div><p class="mt-4 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">{{ t('backup.credentialsNotice') }}</p><p v-if="backupError" class="mt-3 text-sm text-rose-500">{{ backupError }}</p><p v-else-if="backupSuccess" class="mt-3 text-sm text-emerald-600">{{ backupSuccess }}</p><div class="mt-6 flex flex-wrap justify-end gap-2 border-t border-line pt-4"><button class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup">{{ savingBackup ? t('common.saving') : t('common.save') }}</button><button type="button" class="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup" @click="createBackup">{{ runningBackup ? t('backup.creating') : t('backup.create') }}</button><button type="button" class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup" @click="restoreBackup">{{ restoringBackup ? t('backup.restoring') : t('backup.restore') }}</button></div></form>
+          <form v-else-if="activeSection === 'backup'" class="max-w-xl" @submit.prevent="saveBackupSettings">
+            <h3 class="text-base font-semibold">{{ t('settings.backup') }}</h3>
+            <p class="mt-1 text-sm text-muted">{{ t('backup.description') }}</p>
+            <div class="mt-6 grid gap-3">
+              <label class="grid gap-1.5 text-sm font-medium">{{ t('backup.endpoint') }}<input v-model="backupForm.endpoint" class="field" type="url" placeholder="https://s3.us-east-1.amazonaws.com" /></label>
+              <label class="grid gap-1.5 text-sm font-medium">{{ t('backup.bucket') }}<input v-model="backupForm.bucket" class="field" autocomplete="off" placeholder="my-dbfock-backups" /></label>
+              <label class="grid gap-1.5 text-sm font-medium">{{ t('backup.region') }}<input v-model="backupForm.region" class="field" autocomplete="off" placeholder="us-east-1" /></label>
+              <label class="grid gap-1.5 text-sm font-medium">{{ t('backup.accessKey') }}<input v-model="backupForm.accessKey" class="field" type="password" autocomplete="off" :placeholder="hasSavedBackupAccessKey ? t('backup.savedAccessKey') : 'AKIA…'" /></label>
+              <label class="grid gap-1.5 text-sm font-medium">{{ t('backup.secret') }}<input v-model="backupForm.secret" class="field" type="password" autocomplete="off" :placeholder="hasSavedBackupSecret ? t('backup.savedSecret') : '…'" /></label>
+            </div>
+            <p class="mt-4 rounded-md bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">{{ t('backup.credentialsNotice') }}</p>
+            <p class="mt-3 text-sm text-muted">Cada backup recebe data e hora. São mantidos no máximo 5 backups; ao criar o sexto, o mais antigo é excluído.</p>
+            <section class="mt-5 rounded-lg border border-line bg-panel p-4">
+              <div class="flex items-center justify-between gap-3"><h4 class="text-sm font-medium">Backups disponíveis</h4><button type="button" class="text-xs text-accent hover:underline" :disabled="runningBackup || restoringBackup || Boolean(deletingBackupKey)" @click="loadBackups">Atualizar</button></div>
+              <div v-if="backups.length" class="mt-3 divide-y divide-line overflow-hidden rounded-md border border-line">
+                <label v-for="backup in backups" :key="backup.key" class="flex cursor-pointer items-center gap-3 bg-canvas px-3 py-2.5 hover:bg-panel">
+                  <input v-model="selectedBackupKey" type="radio" name="backup" :value="backup.key" />
+                  <span class="min-w-0 flex-1"><span class="block text-sm font-medium">{{ formatDate(backup.createdAt) }}</span><span class="block truncate font-mono text-xs text-muted">{{ backup.key }} · {{ Math.ceil(backup.size / 1024) }} KB</span></span>
+                  <button type="button" class="rounded px-2 py-1 text-xs text-rose-500 hover:bg-rose-500/10 disabled:opacity-50" :disabled="Boolean(deletingBackupKey)" @click.prevent="deleteBackup(backup.key)">{{ deletingBackupKey === backup.key ? 'Excluindo…' : 'Excluir' }}</button>
+                </label>
+              </div>
+              <p v-else class="mt-3 text-sm text-muted">Nenhum backup disponível neste bucket.</p>
+            </section>
+            <p v-if="backupError" class="mt-3 text-sm text-rose-500">{{ backupError }}</p>
+            <p v-else-if="backupSuccess" class="mt-3 text-sm text-emerald-600">{{ backupSuccess }}</p>
+            <div class="mt-6 flex flex-wrap justify-end gap-2 border-t border-line pt-4">
+              <button class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup">{{ savingBackup ? t('common.saving') : t('common.save') }}</button>
+              <button type="button" class="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup" @click="createBackup">{{ runningBackup ? t('backup.creating') : t('backup.create') }}</button>
+              <button type="button" class="rounded border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="savingBackup || runningBackup || restoringBackup || !selectedBackupKey" @click="restoreBackup">{{ restoringBackup ? t('backup.restoring') : t('backup.restore') }}</button>
+            </div>
+          </form>
 
           <section v-else-if="activeSection === 'about'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('settings.about') }}</h3><p class="mt-1 text-sm text-muted">{{ t('about.description') }}</p><dl class="mt-6 overflow-hidden rounded-lg border border-line bg-panel"><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.version') }}</dt><dd class="font-mono text-sm font-medium">{{ appVersion }}</dd></div><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.license') }}</dt><dd class="font-mono text-sm font-medium">{{ license }}</dd></div><div class="flex items-center justify-between gap-4 px-4 py-3"><dt class="text-sm text-muted">{{ t('about.repository') }}</dt><dd><a class="text-sm font-medium text-accent hover:underline" :href="githubUrl" target="_blank" rel="noreferrer">alexclaz/dbfock</a></dd></div></dl></section>
 

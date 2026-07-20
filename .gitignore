@@ -9,4 +9,4 @@ frontend/package.json.md5
 backend/desktop/assets/*
 !backend/desktop/assets/.gitkeep
 backend/build/
-DBFock-macOS.zip
+DBfock-macOS.zip

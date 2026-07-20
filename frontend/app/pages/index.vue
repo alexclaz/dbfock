@@ -32,7 +32,6 @@ const history = ref<QueryHistory[]>([])
 const selectedSavedQueryId = ref('')
 const sqlEditor = ref<{ insertSQL: (sql: string) => void }>()
 const aiAgent = ref<{ ask: (prompt: string) => Promise<void>; pasteQuery: (sql: string) => void }>()
-const resultGrid = ref<{ save: () => boolean; cancel: () => void; canSave: boolean }>()
 const aiConfigured = ref(false)
 const aiVisible = ref(true)
 const editorHeight = ref(46)
@@ -59,6 +58,7 @@ const smartQueryErrorConnectionId = ref<string>()
 const activeTab = computed<WorkspaceTab>(() => workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0] ?? { id: 'empty', title: '', type: 'empty' })
 const activeResultTabs = computed(() => resultTabs[activeTab.value.id] || [])
 const activeResultTab = computed(() => activeResultTabs.value.find((tab) => tab.id === activeResultTabIds[activeTab.value.id]))
+const activeResultSummary = computed(() => activeResultTab.value?.result ? `${t('query.rows', { count: `${activeResultTab.value.result.rowCount}${activeResultTab.value.result.hasMore ? '+' : ''}` })} · ${activeResultTab.value.result.executionTimeMs} ms · ${t('query.affected', { count: activeResultTab.value.result.affectedRows })}` : t('query.results'))
 const showAIAgent = computed(() => aiConfigured.value && aiVisible.value)
 const globalTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'settings'])
 const visibleTabs = computed(() => workspace.tabs.filter((tab) => globalTabTypes.has(tab.type) || tab.connectionId === workspace.activeConnectionId))
@@ -311,10 +311,6 @@ function selectSmartResultTab(id: string) {
   const tab = smartResultTabs.find((item) => item.id === id)
   if (tab) activeSmartResultTabIds[tab.connectionId] = tab.id
 }
-function setSmartResultView(id: string, view: ResultTab['view']) {
-  const tab = smartResultTabs.find((item) => item.id === id)
-  if (tab) tab.view = view
-}
 async function copySmartResult(id: string) {
   const tab = smartResultTabs.find((item) => item.id === id)
   if (tab) await copyResult(tab)
@@ -412,6 +408,14 @@ async function copyResult(resultTab: ResultTab) {
     resultTab.copied = true
     window.setTimeout(() => resultTab.copied = false, 1500)
   } catch { /* Clipboard access can be denied by the browser. */ }
+}
+async function copyActiveResult(id: string) {
+  const resultTab = activeResultTabs.value.find((tab) => tab.id === id)
+  if (resultTab) await copyResult(resultTab)
+}
+async function saveActiveResultEdits(id: string, edited: QueryResult) {
+  const resultTab = activeResultTabs.value.find((tab) => tab.id === id)
+  if (resultTab) await saveResultEdits(resultTab, edited)
 }
 async function loadMoreRows() {
   const resultTab = activeResultTab.value
@@ -617,7 +621,7 @@ watch(() => workspace.activeConnectionId, () => {
           </div>
         </div>
         <SavedQueriesWorkspace v-else-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
-        <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @set-result-view="setSmartResultView" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
+        <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
         <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" />
         <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
         <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" />
@@ -629,9 +633,7 @@ watch(() => workspace.activeConnectionId, () => {
             <button v-else-if="aiConfigured" type="button" class="absolute inset-y-0 right-0 z-10 w-6 border-l border-line bg-panel text-xs font-medium text-muted hover:bg-canvas hover:text-ink" :title="t('aiAgent.title')" :aria-label="t('aiAgent.title')" style="writing-mode: vertical-rl" @click="showHiddenAIAgent">{{ t('aiAgent.title') }}</button>
           </div>
           <div class="h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-accent" @pointerdown="resizeVertical" />
-          <div v-if="activeResultTabs.length" class="flex h-9 items-end gap-1 overflow-x-auto border-b border-line bg-panel px-2"><button v-for="resultTab in activeResultTabs" :key="resultTab.id" type="button" class="group flex h-8 shrink-0 items-center gap-1 rounded-t px-2 text-xs" :class="activeResultTab?.id === resultTab.id ? 'bg-canvas font-medium text-ink' : 'text-muted hover:bg-canvas/60'" @click="activeResultTabIds[activeTab.id] = resultTab.id"><span>{{ resultTab.title }}</span><span class="rounded p-1 opacity-0 group-hover:opacity-100 hover:bg-line" :aria-label="t('common.close')" @click.stop="closeResultTab(activeTab.id, resultTab.id)"><Icon name="lucide:x" class="h-3.5 w-3.5" aria-hidden="true" /></span></button><button type="button" class="mb-1 grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:bg-canvas hover:text-ink" :title="t('query.newResultTab')" :aria-label="t('query.newResultTab')" @click="createResultTab(activeTab.id)"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" /></button></div>
-          <div class="flex items-center justify-between border-b border-line px-4 py-2 text-xs text-muted"><span v-if="activeResultTab?.result">{{ t('query.rows', { count: `${activeResultTab.result.rowCount}${activeResultTab.result.hasMore ? '+' : ''}` }) }} · {{ activeResultTab.result.executionTimeMs }} ms · {{ t('query.affected', { count: activeResultTab.result.affectedRows }) }}</span><span v-else>{{ t('query.results') }}</span><div v-if="activeResultTab" class="flex items-center gap-2"><div class="flex rounded-md border border-line p-0.5"><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'table' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'table'" @click="activeResultTab.view = 'table'">{{ t('grid.table') }}</button><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'json' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'json'" @click="activeResultTab.view = 'json'">JSON</button><button type="button" class="rounded px-2.5 py-1" :class="activeResultTab.view === 'csv' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="activeResultTab.view === 'csv'" @click="activeResultTab.view = 'csv'">CSV</button></div><button v-if="!activeResultTab.editing" type="button" class="rounded-md border border-line px-2.5 py-1 text-ink disabled:cursor-not-allowed disabled:opacity-50" :title="!activeResultTab.source ? t('grid.inlineEditUnsupported') : undefined" :disabled="!activeResultTab.result || activeResultTab.view === 'csv' || !activeResultTab.source" @click="activeResultTab.editing = true">{{ t('grid.edit') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink disabled:cursor-not-allowed disabled:opacity-50" :disabled="!activeResultTab.result" @click="copyResult(activeResultTab)">{{ activeResultTab.copied ? t('grid.copied') : t('grid.copy') }}</button><template v-if="activeResultTab.editing"><button type="button" class="rounded-md bg-accent px-2.5 py-1 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50" :disabled="!resultGrid?.canSave" @click="resultGrid?.save()">{{ t('grid.save') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink" @click="resultGrid?.cancel()">{{ t('grid.cancel') }}</button></template></div></div>
-          <div class="min-h-0 flex-1"><DataGrid ref="resultGrid" :result="activeResultTab?.result" :loading="running" :loading-more="loadingMoreRows" :view="activeResultTab?.view" :editing="activeResultTab?.editing" :editable="Boolean(activeResultTab?.source)" @load-more="loadMoreRows" @start-edit="activeResultTab && (activeResultTab.editing = true)" @save="activeResultTab && saveResultEdits(activeResultTab, $event)" @cancel="activeResultTab && (activeResultTab.editing = false)" /></div>
+          <QueryResults :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :loading="running" :loading-more="loadingMoreRows" :can-create-tab="true" :summary="activeResultSummary" @select-tab="activeResultTabIds[activeTab.id] = $event" @close-tab="closeResultTab(activeTab.id, $event)" @create-tab="createResultTab(activeTab.id)" @copy="copyActiveResult" @save="saveActiveResultEdits" @load-more="loadMoreRows" />
         </div>
       </div>
       <div class="border-t border-line bg-panel px-4 py-2"><details><summary class="cursor-pointer text-xs font-medium text-muted">{{ t('query.history', { count: history.length }) }}</summary><div class="scrollbar mt-2 max-h-28 overflow-auto"><button v-for="item in history" :key="item.id" class="flex w-full items-center gap-1.5 truncate py-1 text-left font-mono text-xs text-muted hover:text-ink" @click="workspace.openTab({ id: `sql:${item.connectionId}:${Date.now()}`, title: t('query.historyTitle'), type: 'sql', connectionId: item.connectionId, executionConnectionId: item.connectionId, sql: item.sql })"><Icon :name="item.status === 'error' ? 'lucide:circle-x' : 'lucide:circle-check'" class="h-3.5 w-3.5 shrink-0" :class="item.status === 'error' ? 'text-rose-500' : 'text-emerald-500'" aria-hidden="true" /><span class="truncate">{{ item.sql }}</span></button></div></details></div>

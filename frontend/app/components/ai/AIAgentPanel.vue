@@ -165,7 +165,8 @@ async function send(message = chat.value?.draft || '') {
   targetTab.aiChat!.draft = ''
   emit('status', tabId, 'running')
   try {
-    const job = await api<AIChatJob>('/ai/chat/jobs', { method: 'POST', body: { connectionId: props.connectionId, database: props.database, prompt, history: targetTab.aiChat!.messages.slice(0, -1), databaseScope: chat.value.databaseScope, selectedDatabases: selectedDatabases.value, tableScope: chat.value.tableScope, selectedTables: selectedTables.value } })
+    const history = targetTab.aiChat!.messages.slice(0, -1).map(({ role, content }) => ({ role, content }))
+    const job = await api<AIChatJob>('/ai/chat/jobs', { method: 'POST', body: { connectionId: props.connectionId, database: props.database, prompt, history, databaseScope: chat.value.databaseScope, selectedDatabases: selectedDatabases.value, tableScope: chat.value.tableScope, selectedTables: selectedTables.value } })
     targetTab.aiJobId = job.id
     await syncJob()
   } catch (cause: any) {

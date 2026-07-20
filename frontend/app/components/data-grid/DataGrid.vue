@@ -10,6 +10,7 @@ const draft = ref<QueryResult>()
 const activeCell = ref<{ row: number; column: string }>()
 const jsonDraft = ref('[]')
 const jsonError = ref('')
+const jsonEditor = ref<HTMLTextAreaElement>()
 const columnWidths = reactive<Record<string, number>>({})
 const inputRefs = new Map<string, HTMLInputElement>()
 
@@ -61,6 +62,12 @@ async function editCell(row: number, column: string) {
   await nextTick()
   inputRefs.get(cellKey(row, column))?.focus()
 }
+async function editJSON() {
+  if (props.view !== 'json' || props.editing || !props.editable) return
+  emit('startEdit')
+  await nextTick()
+  jsonEditor.value?.focus()
+}
 function updateCell(rowIndex: number, column: string, value: string) {
   const row = draft.value?.rows[rowIndex]
   if (!row) return
@@ -105,7 +112,8 @@ defineExpose({ save, cancel, canSave })
       <thead class="sticky top-0 bg-panel text-xs text-muted"><tr><th class="w-12 border-b border-r border-line px-3 py-2 font-medium">#</th><th v-for="column in columns" :key="column.name" class="relative border-b border-r border-line px-3 py-2 font-medium"><div class="truncate">{{ column.name }}</div><small class="font-normal opacity-70">{{ column.databaseType }}</small><span class="absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize hover:bg-accent" :title="t('grid.resizeColumn')" @pointerdown="resizeColumn($event, column.name)" /></th></tr></thead>
       <tbody><tr v-for="(row,index) in rows" :key="index" class="hover:bg-accent/5"><td class="border-b border-r border-line px-3 py-2 text-xs text-muted">{{ index + 1 }}</td><td v-for="column in columns" :key="column.name" class="border-b border-r border-line px-3 py-2" :class="row[column.name] === null ? 'italic text-muted' : ''" :title="display(row[column.name])" @dblclick="editCell(index, column.name)"><input v-if="editing && activeCell?.row === index && activeCell.column === column.name" :ref="(element) => { if (element) inputRefs.set(cellKey(index, column.name), element as HTMLInputElement) }" class="-my-1 w-full rounded border border-accent bg-canvas px-1 py-1 text-sm text-ink outline-none" :value="inputValue(row[column.name])" @input="updateCell(index, column.name, ($event.target as HTMLInputElement).value)" @blur="finishCell" @keydown.enter.prevent="finishCell" @keydown.esc.prevent="resetCell"><span v-else class="block truncate">{{ display(row[column.name]) }}</span></td></tr><tr v-if="loadingMore"><td :colspan="columns.length + 1" class="p-3 text-center text-xs text-muted">{{ t('grid.loading') }}</td></tr><tr v-if="!rows.length"><td :colspan="columns.length + 1" class="p-8 text-center text-muted">{{ t('grid.noRows') }}</td></tr></tbody>
     </table>
-    <div v-else-if="editing && view === 'json'" class="min-h-full bg-canvas p-4"><textarea class="min-h-[18rem] w-full resize-y rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 text-ink outline-none focus:border-accent" spellcheck="false" :value="jsonDraft" @input="updateJSON(($event.target as HTMLTextAreaElement).value)" /><p v-if="jsonError" class="mt-2 text-xs text-rose-500">{{ t('grid.invalidJson') }}: {{ jsonError }}</p></div>
-    <pre v-else class="min-h-full bg-canvas whitespace-pre-wrap break-words p-4 font-mono text-sm text-ink" v-html="view === 'json' ? highlightedJSON : formattedRows" />
+    <div v-else-if="editing && view === 'json'" class="min-h-full bg-canvas p-4"><textarea ref="jsonEditor" class="min-h-[18rem] w-full resize-y rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 text-ink outline-none focus:border-accent" spellcheck="false" :value="jsonDraft" @input="updateJSON(($event.target as HTMLTextAreaElement).value)" /><p v-if="jsonError" class="mt-2 text-xs text-rose-500">{{ t('grid.invalidJson') }}: {{ jsonError }}</p></div>
+    <div v-else-if="view === 'json'" class="min-h-full bg-canvas" @dblclick="editJSON"><pre class="min-h-full cursor-text whitespace-pre-wrap break-words p-4 font-mono text-sm text-ink" v-html="highlightedJSON" /></div>
+    <pre v-else class="min-h-full bg-canvas whitespace-pre-wrap break-words p-4 font-mono text-sm text-ink">{{ formattedRows }}</pre>
   </div>
 </template>

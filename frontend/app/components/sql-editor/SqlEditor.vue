@@ -85,13 +85,21 @@ async function completionSource(context: CompletionContext) {
   if (!context.explicit && !word?.text) return null
   const from = word?.from ?? context.pos
   const text = context.state.doc.toString()
-  const before = text.slice(0, context.pos)
+  // Resolve the qualifier from the text *before* the word being typed, not up to the
+  // cursor: once you've typed past the dot (e.g. "geral.USU"), a cursor-inclusive slice
+  // never ends in "alias." and the qualifier would never be recognised.
+  const before = text.slice(0, from)
+  // Aliases/tables are only resolved from the current statement block (same blank-line
+  // boundaries used to execute a statement), so unrelated queries elsewhere in the editor
+  // don't leak their aliases into suggestions.
+  const { from: blockStart, to: blockEnd } = statementRange(text, context.pos)
+  const statementText = text.slice(blockStart, blockEnd)
   const options: Completion[] = keywords.map((label) => ({ label, type: 'keyword', boost: 2 }))
   await loadDatabases()
   options.push(...databases.value.map((database) => ({ label: database.name, type: 'namespace', detail: 'database', apply: `\`${database.name}\`` })))
   const qualifier = before.match(/([A-Za-z_][\w$]*)\.$/)?.[1]
   if (qualifier) {
-    const reference = tableReferences(text).find((item) => item.alias === qualifier || item.table === qualifier)
+    const reference = tableReferences(statementText).find((item) => item.alias === qualifier || item.table === qualifier)
     if (reference) {
       try { options.push(...(await getColumns(reference.database, reference.table)).map((column) => ({ label: column.name, type: 'property', detail: column.columnType }))) } catch { /* leave the normal suggestions available */ }
     } else {
@@ -102,7 +110,7 @@ async function completionSource(context: CompletionContext) {
     if (database) {
       try { options.push(...(await getTables(database)).map((table) => ({ label: table.name, type: 'class', detail: `${database} table`, apply: `\`${table.name}\`` }))) } catch { /* leave the normal suggestions available */ }
     }
-    for (const reference of tableReferences(text)) {
+    for (const reference of tableReferences(statementText)) {
       try { options.push(...(await getColumns(reference.database, reference.table)).map((column) => ({ label: `${reference.alias}.${column.name}`, type: 'property', detail: `${reference.table} · ${column.columnType}` }))) } catch { /* leave the normal suggestions available */ }
     }
   }
@@ -110,20 +118,14 @@ async function completionSource(context: CompletionContext) {
 }
 type ExecutionBlock = { from: number; to: number; sql: string }
 
-function currentExecutionBlock(): ExecutionBlock | undefined {
-  if (!view) {
-    const sql = props.modelValue.trim()
-    return sql ? { from: 0, to: props.modelValue.length, sql } : undefined
-  }
-  const cursor = view.state.selection.main.head
-  const source = view.state.doc.toString()
+// A blank line deliberately separates executable queries. Semicolons remain
+// part of a block, so multi-statement scripts can still be executed together.
+const blockSeparators = /\r?\n[\t ]*\r?\n+/g
+
+function statementRange(source: string, cursor: number): { from: number; to: number } {
   let start = 0
   let end = source.length
-  // A blank line deliberately separates executable queries. Semicolons remain
-  // part of a block, so multi-statement scripts can still be executed together.
-  const separators = /\r?\n[\t ]*\r?\n+/g
-
-  for (const match of source.matchAll(separators)) {
+  for (const match of source.matchAll(blockSeparators)) {
     const separatorStart = match.index!
     const separatorEnd = separatorStart + match[0].length
     if (separatorEnd <= cursor) {
@@ -135,7 +137,17 @@ function currentExecutionBlock(): ExecutionBlock | undefined {
       break
     }
   }
+  return { from: start, to: end }
+}
 
+function currentExecutionBlock(): ExecutionBlock | undefined {
+  if (!view) {
+    const sql = props.modelValue.trim()
+    return sql ? { from: 0, to: props.modelValue.length, sql } : undefined
+  }
+  const cursor = view.state.selection.main.head
+  const source = view.state.doc.toString()
+  const { from: start, to: end } = statementRange(source, cursor)
   const raw = source.slice(start, end)
   const leading = raw.search(/\S/)
   if (leading < 0) return undefined
@@ -222,7 +234,7 @@ function formatBlock(block: string) {
 }
 function format() {
   const source = view?.state.doc.toString() ?? props.modelValue
-  const formatted = source.split(/\r?\n[\t ]*\r?\n+/).map(formatBlock).filter(Boolean).join('\n\n')
+  const formatted = source.split(blockSeparators).map(formatBlock).filter(Boolean).join('\n\n')
   if (!view || view.state.doc.toString() === formatted) return
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: formatted } })
 }

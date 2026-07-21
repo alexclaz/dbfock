@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { QueryResult } from '~/types/database'
+import type { QueryColumn, QueryResult } from '~/types/database'
 import { queryResultAsCSV, queryResultAsJSON } from '~/utils/queryResult'
 
 const props = withDefaults(defineProps<{ result?: QueryResult; loading?: boolean; loadingMore?: boolean; view?: 'table' | 'json' | 'csv'; editing?: boolean; editable?: boolean; sortColumn?: string; sortDirection?: 'asc' | 'desc' }>(), { view: 'table', editing: false, editable: true })
@@ -23,7 +23,7 @@ const canSave = computed(() => !jsonError.value)
 function display(value: unknown) { if (value === null) return 'NULL'; if (typeof value === 'boolean') return value ? 'true' : 'false'; return String(value) }
 function cloneResult(result?: QueryResult) { return result ? { ...result, columns: result.columns.map((column) => ({ ...column })), rows: result.rows.map((row) => ({ ...row })) } : undefined }
 function cellKey(row: number, column: string) { return `${row}:${column}` }
-function columnWidth(name: string) { return columnWidths[name] ?? 160 }
+function columnWidth(column: QueryColumn) { return columnWidths[column.name] ?? 160 }
 function inputValue(value: unknown) { return value === null ? '' : display(value) }
 
 watch(() => props.editing, (editing) => {
@@ -90,12 +90,21 @@ function save() {
   return true
 }
 function cancel() { emit('cancel') }
-function resizeColumn(event: PointerEvent, column: string) {
+function resizeColumn(event: PointerEvent, column: QueryColumn) {
   event.preventDefault()
+  event.stopPropagation()
+  const handle = event.currentTarget as HTMLElement
+  handle.setPointerCapture(event.pointerId)
   const startX = event.clientX
   const startWidth = columnWidth(column)
-  const move = (next: PointerEvent) => { columnWidths[column] = Math.min(800, Math.max(80, startWidth + next.clientX - startX)) }
-  const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
+  document.body.classList.add('cursor-col-resize', 'select-none')
+  const move = (next: PointerEvent) => { columnWidths[column.name] = Math.min(800, Math.max(36, startWidth + next.clientX - startX)) }
+  const stop = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', stop)
+    handle.releasePointerCapture(event.pointerId)
+    document.body.classList.remove('cursor-col-resize', 'select-none')
+  }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', stop)
 }
@@ -107,10 +116,10 @@ defineExpose({ save, cancel, canSave })
   <div class="scrollbar h-full overflow-auto" @scroll="loadMore">
     <div v-if="loading" class="p-5 text-sm text-muted">{{ t('grid.loading') }}</div>
     <div v-else-if="!result" class="grid h-full place-items-center p-8 text-center text-sm text-muted">{{ t('grid.empty') }}</div>
-    <table v-else-if="view === 'table'" class="min-w-full table-fixed border-collapse text-left text-sm">
-      <colgroup><col class="w-12"><col v-for="column in columns" :key="column.name" :style="{ width: `${columnWidth(column.name)}px` }"></colgroup>
-      <thead class="sticky top-0 bg-panel text-xs text-muted"><tr><th class="w-12 border-b border-r border-line px-3 py-2 font-medium">#</th><th v-for="column in columns" :key="column.name" class="relative border-b border-r border-line px-3 py-2 font-medium"><button type="button" class="flex w-full items-center gap-1 text-left" :title="t('grid.sortColumn')" @click="$emit('sort', column.name)"><span class="truncate">{{ column.name }}</span><Icon v-if="sortColumn === column.name" :name="sortDirection === 'desc' ? 'lucide:arrow-down' : 'lucide:arrow-up'" class="h-3 w-3 shrink-0 text-accent" aria-hidden="true" /></button><small class="font-normal opacity-70">{{ column.databaseType }}</small><span class="absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize hover:bg-accent" :title="t('grid.resizeColumn')" @pointerdown="resizeColumn($event, column.name)" /></th></tr></thead>
-      <tbody><tr v-for="(row,index) in rows" :key="index" class="hover:bg-accent/5"><td class="border-b border-r border-line px-3 py-2 text-xs text-muted">{{ index + 1 }}</td><td v-for="column in columns" :key="column.name" class="border-b border-r border-line px-3 py-2" :class="row[column.name] === null ? 'italic text-muted' : ''" :title="display(row[column.name])" @dblclick="editCell(index, column.name)"><input v-if="editing && activeCell?.row === index && activeCell.column === column.name" :ref="(element) => { if (element) inputRefs.set(cellKey(index, column.name), element as HTMLInputElement) }" class="-my-1 w-full rounded border border-accent bg-canvas px-1 py-1 text-sm text-ink outline-none" :value="inputValue(row[column.name])" @input="updateCell(index, column.name, ($event.target as HTMLInputElement).value)" @blur="finishCell" @keydown.enter.prevent="finishCell" @keydown.esc.prevent="resetCell"><span v-else class="block truncate">{{ display(row[column.name]) }}</span></td></tr><tr v-if="loadingMore"><td :colspan="columns.length + 1" class="p-3 text-center text-xs text-muted">{{ t('grid.loading') }}</td></tr><tr v-if="!rows.length"><td :colspan="columns.length + 1" class="p-8 text-center text-muted">{{ t('grid.noRows') }}</td></tr></tbody>
+    <table v-else-if="view === 'table'" class="table-fixed border-collapse text-left text-sm">
+      <colgroup><col class="w-12"><col v-for="column in columns" :key="column.name" :style="{ width: `${columnWidth(column)}px` }"></colgroup>
+      <thead class="sticky top-0 bg-panel text-xs text-muted"><tr><th class="w-12 border-b border-r border-line px-3 py-2 font-medium">#</th><th v-for="column in columns" :key="column.name" class="relative border-b border-r border-line px-3 py-2 font-medium" :style="{ width: `${columnWidth(column)}px`, maxWidth: `${columnWidth(column)}px` }"><button type="button" class="flex w-full items-center gap-1 text-left" :title="t('grid.sortColumn')" @click="$emit('sort', column.name)"><span class="truncate">{{ column.name }}</span><Icon v-if="sortColumn === column.name" :name="sortDirection === 'desc' ? 'lucide:arrow-down' : 'lucide:arrow-up'" class="h-3 w-3 shrink-0 text-accent" aria-hidden="true" /></button><small class="block truncate font-normal opacity-70">{{ column.databaseType }}</small><span class="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize select-none hover:bg-accent/70 active:bg-accent" :title="t('grid.resizeColumn')" @pointerdown="resizeColumn($event, column)" /></th></tr></thead>
+      <tbody><tr v-for="(row,index) in rows" :key="index" class="hover:bg-accent/5"><td class="border-b border-r border-line px-3 py-2 text-xs text-muted">{{ index + 1 }}</td><td v-for="column in columns" :key="column.name" class="overflow-hidden border-b border-r border-line px-3 py-2" :class="row[column.name] === null ? 'italic text-muted' : ''" :style="{ width: `${columnWidth(column)}px`, maxWidth: `${columnWidth(column)}px` }" :title="display(row[column.name])" @dblclick="editCell(index, column.name)"><input v-if="editing && activeCell?.row === index && activeCell.column === column.name" :ref="(element) => { if (element) inputRefs.set(cellKey(index, column.name), element as HTMLInputElement) }" class="-my-1 w-full rounded border border-accent bg-canvas px-1 py-1 text-sm text-ink outline-none" :value="inputValue(row[column.name])" @input="updateCell(index, column.name, ($event.target as HTMLInputElement).value)" @blur="finishCell" @keydown.enter.prevent="finishCell" @keydown.esc.prevent="resetCell"><span v-else class="block truncate">{{ display(row[column.name]) }}</span></td></tr><tr v-if="loadingMore"><td :colspan="columns.length + 1" class="p-3 text-center text-xs text-muted">{{ t('grid.loading') }}</td></tr><tr v-if="!rows.length"><td :colspan="columns.length + 1" class="p-8 text-center text-muted">{{ t('grid.noRows') }}</td></tr></tbody>
     </table>
     <div v-else-if="editing && view === 'json'" class="min-h-full bg-canvas p-4"><textarea ref="jsonEditor" class="min-h-[18rem] w-full resize-y rounded-md border border-line bg-panel p-3 font-mono text-sm leading-6 text-ink outline-none focus:border-accent" spellcheck="false" :value="jsonDraft" @input="updateJSON(($event.target as HTMLTextAreaElement).value)" /><p v-if="jsonError" class="mt-2 text-xs text-rose-500">{{ t('grid.invalidJson') }}: {{ jsonError }}</p></div>
     <div v-else-if="view === 'json'" class="min-h-full bg-canvas" @dblclick="editJSON"><pre class="min-h-full cursor-text whitespace-pre-wrap break-words p-4 font-mono text-sm text-ink" v-html="highlightedJSON" /></div>

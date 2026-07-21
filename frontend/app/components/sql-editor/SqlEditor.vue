@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { autocompletion, completionKeymap, startCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete'
-import { defaultKeymap, indentWithTab, toggleComment } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from '@codemirror/commands'
 import { sql, MySQL } from '@codemirror/lang-sql'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { EditorState, StateEffect, StateField } from '@codemirror/state'
-import { Decoration, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
+import { Decoration, drawSelection, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import type { ColumnInfo, Connection, DatabaseInfo, TableInfo } from '~/types/database'
 
@@ -372,7 +372,7 @@ function closeContextMenuOnKeyDown(event: KeyboardEvent) { if (event.key === 'Es
 watch(() => props.modelValue, (value) => { if (!syncing && view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } }) })
 watch(() => props.connectionId, () => { databases.value = []; tablesByDatabase.clear(); columnsByTable.clear(); metadataState.value = 'idle'; loadDatabases() })
 onMounted(() => {
-  view = new EditorView({ state: EditorState.create({ doc: props.modelValue, extensions: [lineNumbers(), searchHighlights, sql({ dialect: MySQL }), syntaxHighlighting(highlights), theme, contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] }), parent: editorHost.value! })
+  view = new EditorView({ state: EditorState.create({ doc: props.modelValue, extensions: [lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), theme, contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] }), parent: editorHost.value! })
   mountSearchControls()
   document.addEventListener('pointerdown', closeContextMenuOnPointerDown)
   document.addEventListener('keydown', closeContextMenuOnKeyDown)

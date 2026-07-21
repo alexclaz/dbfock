@@ -23,12 +23,49 @@ const filteredConnections = computed(() => {
     return Object.entries(tables).some(([key, list]) => key.startsWith(`d:${connection.id}:`) && list.some((table) => table.name.toLowerCase().includes(query)))
   })
 })
+const searchResults = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  if (!query) return []
+  const results: { connection: Connection; database: string; table: string }[] = []
+  for (const connection of props.connections) {
+    for (const [key, list] of Object.entries(tables)) {
+      if (!key.startsWith(`d:${connection.id}:`)) continue
+      const database = key.slice(`d:${connection.id}:`.length)
+      for (const table of list) if (table.name.toLowerCase().includes(query)) results.push({ connection, database, table: table.name })
+    }
+  }
+  return results
+})
 function visibleTables(connectionId: string, database: string) {
   const list = tables[`d:${connectionId}:${database}`] ?? []
   const query = search.value.trim().toLowerCase()
   if (!query) return list
   return list.filter((table) => table.name.toLowerCase().includes(query))
 }
+
+async function ensureDatabasesForSearch(connection: Connection) {
+  const key = `c:${connection.id}`
+  if (databases[connection.id] || loading.has(key)) return
+  loading.add(key)
+  try { databases[connection.id] = await api<DatabaseInfo[]>(`/connections/${connection.id}/databases`) }
+  catch { /* background prefetch, surfaced only if the user expands the connection */ }
+  finally { loading.delete(key) }
+}
+async function ensureTablesForSearch(connection: Connection, database: string) {
+  const key = `d:${connection.id}:${database}`
+  if (tables[key] || loading.has(key)) return
+  loading.add(key)
+  try { tables[key] = await api<TableInfo[]>(`/connections/${connection.id}/databases/${encodeURIComponent(database)}/tables`) }
+  catch { /* background prefetch, surfaced only if the user expands the database */ }
+  finally { loading.delete(key) }
+}
+async function ensureSearchDataLoaded() {
+  await Promise.all(props.connections.filter((connection) => connection.status === 'connected').map(async (connection) => {
+    await ensureDatabasesForSearch(connection)
+    await Promise.all((databases[connection.id] ?? []).map((database) => ensureTablesForSearch(connection, database.name)))
+  }))
+}
+watch(search, (value) => { if (value.trim()) ensureSearchDataLoaded() })
 
 function showError(cause: unknown) {
   toast.value = cause instanceof Error ? cause.message : t('tree.connectionError')
@@ -76,6 +113,11 @@ async function disconnect(connection: Connection) {
   } catch (cause: unknown) { showError(cause) }
   finally { changingConnectionId.value = undefined }
 }
+function closeActionMenuOutside(event: MouseEvent) {
+  if (!(event.target as HTMLElement).closest('[data-connection-menu]')) actionMenuFor.value = undefined
+}
+onMounted(() => window.addEventListener('click', closeActionMenuOutside))
+onBeforeUnmount(() => window.removeEventListener('click', closeActionMenuOutside))
 async function revalidate(connection: Connection) {
   actionMenuFor.value = undefined
   changingConnectionId.value = connection.id
@@ -109,9 +151,18 @@ async function toggleDatabase(connection: Connection, database: string) {
     <div class="flex shrink-0 items-center justify-between border-b border-line px-3 py-3"><div class="flex items-center gap-2"><img class="h-8 w-8 rounded-lg border border-line bg-white object-contain p-0.5" src="/branding/favicon/android-chrome-192x192.png" alt="DBfock" /><span class="font-semibold tracking-tight">DBfock</span></div><div class="flex items-center gap-1"><button class="focus-ring grid h-9 w-9 place-items-center rounded-md text-muted hover:bg-canvas hover:text-ink" :title="t('tree.home')" :aria-label="t('tree.home')" @click="$emit('home')"><Icon name="lucide:house" class="h-4 w-4" aria-hidden="true" /></button><button class="focus-ring grid h-9 w-9 place-items-center rounded-md text-muted hover:bg-canvas hover:text-ink" :title="t('tree.savedQueries')" :aria-label="t('tree.savedQueries')" @click="$emit('saved')"><Icon name="lucide:bookmark" class="h-4 w-4" aria-hidden="true" /></button><button class="focus-ring grid h-9 w-9 place-items-center rounded-md text-muted hover:bg-canvas hover:text-ink" :title="t('tree.smartQueries')" :aria-label="t('tree.smartQueries')" @click="$emit('smart')"><Icon name="lucide:sparkles" class="h-4 w-4" aria-hidden="true" /></button><button class="focus-ring grid h-9 w-9 place-items-center rounded-md text-muted hover:bg-canvas hover:text-ink" :title="t('tree.settings')" :aria-label="t('tree.settings')" @click="$emit('settings')"><Icon name="lucide:settings-2" class="h-4 w-4" aria-hidden="true" /></button></div></div>
     <div class="flex items-center gap-2 border-b border-line p-3"><input v-model="search" class="focus-ring h-8 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2 text-sm" :placeholder="t('tree.search')"><button class="grid rounded p-1 text-muted hover:bg-canvas" :title="t('tree.refreshConnections')" :aria-label="t('tree.refreshConnections')" @click="$emit('refresh')"><Icon name="lucide:refresh-cw" class="h-4 w-4" aria-hidden="true" /></button></div>
     <div class="scrollbar flex-1 overflow-auto px-2 py-3">
+      <div v-if="search.trim()" class="mb-3">
+        <p class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted">{{ t('tree.searchResults') }}</p>
+        <button v-for="result in searchResults" :key="`${result.connection.id}:${result.database}:${result.table}`" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-canvas" @click="$emit('table', result.connection, result.database, result.table)">
+          <Icon name="lucide:table-2" class="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
+          <span class="min-w-0 flex-1 truncate">{{ result.table }}</span>
+          <span class="shrink-0 truncate text-xs text-muted">{{ result.database }} · {{ result.connection.name }}</span>
+        </button>
+        <p v-if="!searchResults.length" class="px-2 py-2 text-xs text-muted">{{ t('tree.noSearchResults') }}</p>
+      </div>
       <div class="mb-2 flex items-center justify-between px-2"><p class="text-[11px] font-semibold uppercase tracking-wider text-muted">{{ t('tree.connections') }}</p><button class="grid rounded p-1.5 text-muted hover:bg-canvas hover:text-ink" :title="t('tree.newConnection')" :aria-label="t('tree.newConnection')" @click="$emit('add')"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" /></button></div>
       <div v-for="connection in filteredConnections" :key="connection.id">
-        <div class="group relative flex items-center gap-1 rounded-md px-1 py-1 hover:bg-canvas" :class="activeConnectionId === connection.id ? 'bg-canvas' : ''">
+        <div class="group relative flex items-center gap-1 rounded-md px-1 py-1 hover:bg-canvas" data-connection-menu :class="activeConnectionId === connection.id ? 'bg-canvas' : ''">
           <button class="grid w-5 place-items-center text-muted disabled:opacity-40" :disabled="connection.status !== 'connected'" @click="toggleConnection(connection)"><Icon :name="expanded.has(`c:${connection.id}`) ? 'lucide:chevron-down' : 'lucide:chevron-right'" class="h-3.5 w-3.5" aria-hidden="true" /></button>
           <button class="flex min-w-0 flex-1 items-center gap-2 text-left text-sm" @click="toggleConnection(connection)" @dblclick="connectConnection(connection)"><i class="h-2.5 w-2.5 rounded-full ring-2 ring-panel" :style="{ backgroundColor: connection.color }" /><i class="h-1.5 w-1.5 rounded-full" :class="connection.status === 'connected' ? 'bg-emerald-500' : 'bg-muted'" /><span class="truncate">{{ connection.name }}</span><span v-if="connection.environment === 'production'" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('connection.production') }}</span></button>
           <button class="grid rounded p-1 text-muted hover:bg-line disabled:opacity-60" :aria-expanded="actionMenuFor === connection.id" :aria-label="t('tree.connectionActions')" :disabled="changingConnectionId === connection.id" @click.stop="actionMenuFor = actionMenuFor === connection.id ? undefined : connection.id"><Icon name="lucide:ellipsis" class="h-4 w-4" aria-hidden="true" /></button>

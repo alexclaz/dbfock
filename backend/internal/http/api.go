@@ -97,6 +97,7 @@ func (a *API) Router() http.Handler {
 				r.Get("/databases", a.listDatabases)
 				r.Get("/databases/{database}/tables", a.listTables)
 				r.Get("/databases/{database}/views", a.listViews)
+				r.Get("/databases/{database}/diagram", a.schemaDiagram)
 				r.Get("/databases/{database}/tables/{table}/structure", a.structure)
 				r.Get("/databases/{database}/tables/{table}/data", a.tableData)
 				r.Post("/query", a.query)
@@ -398,6 +399,12 @@ func (a *API) listViews(w http.ResponseWriter, r *http.Request) {
 	db := chi.URLParam(r, "database")
 	a.metadata(w, r, func(ctx context.Context, p database.Provider, c models.Connection) (any, error) {
 		return p.ListTables(ctx, c, db, true)
+	})
+}
+func (a *API) schemaDiagram(w http.ResponseWriter, r *http.Request) {
+	db := chi.URLParam(r, "database")
+	a.metadata(w, r, func(ctx context.Context, p database.Provider, c models.Connection) (any, error) {
+		return p.GetSchemaDiagram(ctx, c, db)
 	})
 }
 func (a *API) structure(w http.ResponseWriter, r *http.Request) {

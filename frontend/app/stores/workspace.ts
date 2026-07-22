@@ -4,7 +4,8 @@ const defaultTabs = (): WorkspaceTab[] => [{ id: 'welcome', title: 'Home', type:
 const homeTabId = 'welcome'
 const pinnedTabIds = new Set(['welcome', 'saved-queries', 'smart-queries', 'settings'])
 const validTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'sql', 'table', 'database', 'connection-home', 'settings', 'stats'])
-const validTableSections = new Set<NonNullable<WorkspaceTab['tableSection']>>(['data', 'structure', 'constraints', 'foreignKeys', 'references', 'triggers', 'indexes', 'ddl'])
+const validTableSections = new Set<NonNullable<WorkspaceTab['tableSection']>>(['data', 'structure', 'constraints', 'foreignKeys', 'references', 'triggers', 'indexes', 'ddl', 'diagram'])
+const validDatabaseSections = new Set<NonNullable<WorkspaceTab['databaseSection']>>(['tables', 'diagram'])
 
 type SavedWorkspace = {
   version?: number
@@ -39,6 +40,7 @@ function savedTabs(value: unknown): WorkspaceTab[] | undefined {
       && (candidate.table === undefined || typeof candidate.table === 'string')
       && (candidate.sql === undefined || typeof candidate.sql === 'string')
       && (candidate.tableSection === undefined || validTableSections.has(candidate.tableSection))
+      && (candidate.databaseSection === undefined || validDatabaseSections.has(candidate.databaseSection))
       && (candidate.settingsSection === undefined || candidate.settingsSection === 'appearance' || candidate.settingsSection === 'shortcuts' || candidate.settingsSection === 'connections' || candidate.settingsSection === 'ai' || candidate.settingsSection === 'audit' || candidate.settingsSection === 'backup')
       && (candidate.aiChat === undefined || isAIAgentChat(candidate.aiChat))
       && (candidate.aiJobId === undefined || typeof candidate.aiJobId === 'string')

@@ -313,6 +313,82 @@ func (p *Provider) GetTableStructure(ctx context.Context, c models.Connection, d
 	})
 	return
 }
+func (p *Provider) GetSchemaDiagram(ctx context.Context, c models.Connection, dbName string) (result *models.SchemaDiagram, err error) {
+	if err = database.ValidateIdentifier(dbName); err != nil {
+		return
+	}
+	result = &models.SchemaDiagram{Tables: []models.DiagramTable{}}
+	err = p.withDB(c, func(db *sql.DB) error {
+		byName := map[string]*models.DiagramTable{}
+		order := []string{}
+		tables, e := db.QueryContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE' ORDER BY table_name`, dbName)
+		if e != nil {
+			return e
+		}
+		defer tables.Close()
+		for tables.Next() {
+			var name string
+			if e = tables.Scan(&name); e != nil {
+				return e
+			}
+			byName[name] = &models.DiagramTable{Name: name, Columns: []models.ColumnInfo{}, ForeignKeys: []models.ForeignKeyInfo{}}
+			order = append(order, name)
+		}
+		if e = tables.Err(); e != nil {
+			return e
+		}
+		defer func() {
+			for _, name := range order {
+				result.Tables = append(result.Tables, *byName[name])
+			}
+		}()
+		columns, e := db.QueryContext(ctx, `SELECT table_name,column_name,data_type,column_type,is_nullable,column_key,column_default,extra FROM information_schema.columns WHERE table_schema=? ORDER BY table_name,ordinal_position`, dbName)
+		if e != nil {
+			return e
+		}
+		defer columns.Close()
+		for columns.Next() {
+			var table string
+			var x models.ColumnInfo
+			var nullable string
+			var def sql.NullString
+			if e = columns.Scan(&table, &x.Name, &x.DatabaseType, &x.ColumnType, &nullable, &x.Key, &def, &x.Extra); e != nil {
+				return e
+			}
+			t := byName[table]
+			if t == nil {
+				continue
+			}
+			x.Nullable = nullable == "YES"
+			if def.Valid {
+				x.Default = &def.String
+			}
+			t.Columns = append(t.Columns, x)
+		}
+		if e = columns.Err(); e != nil {
+			return e
+		}
+		fq, e := db.QueryContext(ctx, `SELECT table_name,constraint_name,column_name,referenced_table_name,referenced_column_name FROM information_schema.key_column_usage WHERE table_schema=? AND referenced_table_name IS NOT NULL ORDER BY table_name,constraint_name,ordinal_position`, dbName)
+		if e != nil {
+			return e
+		}
+		defer fq.Close()
+		for fq.Next() {
+			var table string
+			var f models.ForeignKeyInfo
+			if e = fq.Scan(&table, &f.Name, &f.Column, &f.ReferencedTable, &f.ReferencedColumn); e != nil {
+				return e
+			}
+			t := byName[table]
+			if t == nil {
+				continue
+			}
+			t.ForeignKeys = append(t.ForeignKeys, f)
+		}
+		return fq.Err()
+	})
+	return
+}
 func (p *Provider) GetTableData(ctx context.Context, c models.Connection, dbName, table string, limit, offset int, sort, dir string) (*models.QueryResult, error) {
 	qdb, err := database.QuoteIdentifier(dbName)
 	if err != nil {

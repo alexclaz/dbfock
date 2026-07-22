@@ -28,6 +28,7 @@ type Provider interface {
 	ListDatabases(context.Context, models.Connection) ([]models.DatabaseInfo, error)
 	ListTables(context.Context, models.Connection, string, bool) ([]models.TableInfo, error)
 	GetTableStructure(context.Context, models.Connection, string, string) (*models.TableStructure, error)
+	GetSchemaDiagram(context.Context, models.Connection, string) (*models.SchemaDiagram, error)
 	GetTableData(context.Context, models.Connection, string, string, int, int, string, string) (*models.QueryResult, error)
 	ConnectionMetadata(context.Context, models.Connection, string) (models.MetadataTable, error)
 	Query(context.Context, models.Connection, string, int) (*models.QueryResult, error)

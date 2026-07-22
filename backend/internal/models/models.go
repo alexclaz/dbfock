@@ -168,6 +168,14 @@ type TableStructure struct {
 	Triggers    []TriggerInfo    `json:"triggers"`
 	DDL         string           `json:"ddl"`
 }
+type DiagramTable struct {
+	Name        string           `json:"name"`
+	Columns     []ColumnInfo     `json:"columns"`
+	ForeignKeys []ForeignKeyInfo `json:"foreignKeys"`
+}
+type SchemaDiagram struct {
+	Tables []DiagramTable `json:"tables"`
+}
 type QueryColumn struct {
 	Name         string `json:"name"`
 	DatabaseType string `json:"databaseType"`

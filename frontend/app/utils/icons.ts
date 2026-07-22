@@ -7,6 +7,8 @@ const workspaceIcons: Record<WorkspaceTab['type'], string> = {
   smart: 'lucide:sparkles',
   sql: 'lucide:file-code-2',
   table: 'lucide:table-2',
+  database: 'lucide:database',
+  'connection-home': 'lucide:layout-dashboard',
   settings: 'lucide:settings-2',
   stats: 'lucide:chart-no-axes-combined',
 }

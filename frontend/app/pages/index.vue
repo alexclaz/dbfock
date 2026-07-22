@@ -96,6 +96,10 @@ function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai
   workspace.activeTabId = 'settings'
 }
 function openHome() { workspace.openTab({ id: 'welcome', title: t('search.home'), type: 'welcome' }) }
+function openConnectionHome(connection: Connection) {
+  workspace.activeConnectionId = connection.id
+  workspace.openTab({ id: `connection-home:${connection.id}`, title: connection.name, type: 'connection-home', connectionId: connection.id })
+}
 function openSavedQueries() { workspace.openTab({ id: 'saved-queries', title: t('savedQueries.title'), type: 'saved' }) }
 function openSmartQueries() { workspace.openTab({ id: 'smart-queries', title: t('smartQueries.title'), type: 'smart' }) }
 
@@ -197,6 +201,14 @@ function requestCloseOtherTabs(id: string) {
 function openTable(connection: Connection, database: string, table: string) {
   workspace.activeConnectionId = connection.id
   workspace.openTab({ id: `table:${connection.id}:${database}:${table}`, title: table, type: 'table', connectionId: connection.id, database, table })
+}
+function openDatabase(connection: Connection, database: string) {
+  workspace.activeConnectionId = connection.id
+  workspace.openTab({ id: `database:${connection.id}:${database}`, title: database, type: 'database', connectionId: connection.id, database })
+}
+function openDatabaseTable(table: string) {
+  const connection = workspace.connections.find((item) => item.id === activeTab.value.connectionId)
+  if (connection && activeTab.value.database) openTable(connection, activeTab.value.database, table)
 }
 function openStats(connection: Connection) {
   workspace.activeConnectionId = connection.id
@@ -529,7 +541,7 @@ function resizeConnections(event: PointerEvent) {
 }
 
 async function saved() { await workspace.refreshConnections(); editing.value = undefined }
-async function deleted() { const deletedId = editing.value?.id; if (deletedId === workspace.activeConnectionId) workspace.activeConnectionId = undefined; if (deletedId) workspace.closeTab(`stats:${deletedId}`); await workspace.refreshConnections(); editing.value = undefined }
+async function deleted() { const deletedId = editing.value?.id; if (deletedId === workspace.activeConnectionId) workspace.activeConnectionId = undefined; if (deletedId) { workspace.closeTab(`stats:${deletedId}`); workspace.closeTab(`connection-home:${deletedId}`) } await workspace.refreshConnections(); editing.value = undefined }
 function openSearch(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault()
@@ -597,7 +609,7 @@ watch(() => workspace.activeConnectionId, () => {
 
 <template>
   <div class="flex h-full">
-    <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @edit="editing = $event; showConnection = true" @stats="openStats" @new-query="openSQLForConnection($event.id)" @refresh="workspace.refreshConnections" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @settings="openSettings" />
+    <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @settings="openSettings" />
     <div class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeConnections" />
     <section class="flex min-w-0 flex-1 flex-col">
       <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reorder="workspace.moveTab" @new-query="newSQL" />
@@ -622,8 +634,10 @@ watch(() => workspace.activeConnectionId, () => {
         </div>
         <SavedQueriesWorkspace v-else-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
         <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
-        <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" />
-        <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="activeTab.id" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
+        <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`table:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" />
+        <DatabaseWorkspace v-else-if="activeTab.type === 'database' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`database:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" @table="openDatabaseTable" />
+        <ConnectionHomeWorkspace v-else-if="activeTab.type === 'connection-home' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`connection-home:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" @edit="editing = $event; showConnection = true" @new-query="openSQLForConnection($event.id)" @stats="openStats" @database="openDatabase" />
+        <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`stats:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
         <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" />
         <div v-else class="flex h-full min-h-0 flex-col">
           <div class="relative flex min-h-64 shrink-0 border-b border-line" :style="{ height: `${editorHeight}%` }">

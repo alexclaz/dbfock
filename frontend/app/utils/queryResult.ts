@@ -1,6 +1,7 @@
 import type { QueryResult } from '~/types/database'
 
 export type QueryRowUpdate = { original: Record<string, unknown>; changes: Record<string, unknown> }
+export type QueryResultEditOptions = { editableColumns?: string[]; keyColumns?: string[] }
 
 function valueForExport(value: unknown) {
   if (value === null || value === undefined) return ''
@@ -40,12 +41,15 @@ function sameValue(left: unknown, right: unknown) {
   catch { return false }
 }
 
-export function queryResultEdits(original: QueryResult, edited: QueryResult): QueryRowUpdate[] {
+export function queryResultEdits(original: QueryResult, edited: QueryResult, options: QueryResultEditOptions = {}): QueryRowUpdate[] {
   if (original.rows.length !== edited.rows.length) throw new Error('Adding or removing rows is not supported by inline editing.')
+  const editableColumns = options.editableColumns ? new Set(options.editableColumns) : undefined
   return edited.rows.flatMap((row, index) => {
     const previous = original.rows[index]
     if (!previous) return []
-    const changes = Object.fromEntries(Object.entries(row).filter(([column, value]) => !sameValue(previous[column], value)))
-    return Object.keys(changes).length ? [{ original: previous, changes }] : []
+    const changes = Object.fromEntries(Object.entries(row).filter(([column, value]) => (!editableColumns || editableColumns.has(column)) && !sameValue(previous[column], value)))
+    const keyColumns = options.keyColumns
+    const key = keyColumns ? Object.fromEntries(keyColumns.map((column) => [column, previous[column]])) : previous
+    return Object.keys(changes).length ? [{ original: key, changes }] : []
   })
 }

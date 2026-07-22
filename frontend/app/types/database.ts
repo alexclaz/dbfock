@@ -1,7 +1,7 @@
 export interface Connection { id: string; name: string; driver: string; host: string; port: number; username: string; initialDatabase: string; color: string; environment: 'development' | 'production'; sslEnabled: boolean; timeoutSeconds: number; status: 'connected' | 'disconnected'; createdAt: string }
 export interface ConnectionInput { name: string; driver: 'mysql'; host: string; port: number; username: string; password?: string; initialDatabase?: string; color: string; environment: 'development' | 'production'; sslEnabled: boolean; timeoutSeconds: number }
 export interface DatabaseInfo { name: string }
-export interface TableInfo { name: string; type: string }
+export interface TableInfo { name: string; type: string; columnCount: number }
 export interface ColumnInfo { name: string; databaseType: string; columnType: string; nullable: boolean; key: string | null; default: string | null; extra: string }
 export interface TableStructure { columns: ColumnInfo[]; constraints: { name: string; type: string; columns: string[] }[]; indexes: { name: string; unique: boolean; columns: string[] }[]; foreignKeys: { name: string; column: string; referencedTable: string; referencedColumn: string }[]; references: { name: string; database: string; table: string; column: string; referencedColumn: string }[]; triggers: { name: string; timing: string; event: string; statement: string }[]; ddl: string }
 export interface DiagramForeignKey { name: string; column: string; referencedTable: string; referencedColumn: string }

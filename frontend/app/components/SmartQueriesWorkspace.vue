@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Connection, QueryResult, SmartQuery } from '~/types/database'
 
-type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; source?: { connectionId: string; database: string; table: string } }
+type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[] }
 
 const props = defineProps<{ queries: SmartQuery[]; connections: Connection[]; resultTabs: SmartResultTab[]; activeResultTabId?: string; loading?: boolean; loadingMore?: boolean }>()
 const emit = defineEmits<{ run: [query: SmartQuery, values: Record<string, string>, newTab: boolean]; remove: [id: string]; update: [id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>]; openEditor: [query: SmartQuery]; selectResultTab: [id: string]; closeResultTab: [id: string]; copyResult: [id: string]; saveResult: [id: string, result: QueryResult]; loadMore: [] }>()

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import type { Connection, QueryHistory, QueryResult, SavedQuery, SmartQuery, TransactionStatus, WorkspaceTab } from '~/types/database'
+import type { Connection, QueryHistory, QueryResult, SavedQuery, SmartQuery, TableStructure, TransactionStatus, WorkspaceTab } from '~/types/database'
 import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits } from '~/utils/queryResult'
 
-type EditableResultSource = { connectionId: string; database: string; table: string }
+type EditableResultSource = { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }
 
 type ResultTab = {
   id: string
@@ -11,7 +11,7 @@ type ResultTab = {
   view: 'table' | 'json' | 'csv'
   copied: boolean
   editing: boolean
-  source?: EditableResultSource
+  sources?: EditableResultSource[]
 }
 type SmartResultTab = ResultTab & { connectionId: string; smartQueryId: string }
 type AISettings = { configured: boolean }
@@ -47,6 +47,7 @@ const activeResultTabIds = reactive<Record<string, string | undefined>>({})
 const pagedQueries = reactive<Record<string, { connectionId: string; sql: string; requestId: string } | undefined>>({})
 const smartResultTabs = reactive<SmartResultTab[]>([])
 const activeSmartResultTabIds = reactive<Record<string, string | undefined>>({})
+const recentlyClosedTabs = ref<WorkspaceTab[]>([])
 const pendingSave = ref<PendingSave>()
 const pendingConfirmation = ref<PendingConfirmation>()
 let nextResultTabId = 0
@@ -172,7 +173,6 @@ function saveTabById(id: string) {
   const tab = workspace.tabs.find((item) => item.id === id)
   if (tab) saveQuery(tab)
 }
-function closesWithoutConfirmation(tab: WorkspaceTab) { return tab.type === 'welcome' || tab.type === 'settings' || tab.type === 'saved' || tab.type === 'smart' }
 async function requestCloseTabs(targets: WorkspaceTab[]) {
   if (!targets.length) return
 
@@ -182,9 +182,14 @@ async function requestCloseTabs(targets: WorkspaceTab[]) {
       if (!await saveQuery(tab)) return
     }
   }
-  const tabsRequiringConfirmation = targets.filter((tab) => !closesWithoutConfirmation(tab))
-  if (tabsRequiringConfirmation.length && !await confirmAction({ title: t('tabs.closeTabsTitle'), description: t('tabs.confirmClose', { count: tabsRequiringConfirmation.length }), confirmLabel: t('tabs.close'), tone: 'danger' })) return
+  recentlyClosedTabs.value = [...recentlyClosedTabs.value, ...targets.filter((tab) => tab.id !== 'welcome').map((tab) => ({ ...tab }))].slice(-20)
   workspace.closeTabs(new Set(targets.map((tab) => tab.id)))
+}
+function reopenLastClosedTab() {
+  const tab = recentlyClosedTabs.value.pop()
+  if (!tab) return
+  if (tab.connectionId) workspace.activeConnectionId = tab.connectionId
+  workspace.openTab(tab)
 }
 function requestCloseTab(id: string) {
   const tab = workspace.tabs.find((item) => item.id === id)
@@ -258,7 +263,7 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
     const pageable = /^\s*select\b/i.test(sql)
     const result = await api<QueryResult>(`/connections/${connectionId}/query`, { method: 'POST', body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId: resultTab.id } : { sql, requestId: resultTab.id } })
     resultTab.result = pageable ? pageResult(result) : result
-    resultTab.source = editableSource(sql, connection)
+    resultTab.sources = await editableSources(sql, connection, resultTab.result)
     if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId: resultTab.id }
     updateTransactionStatus(connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
@@ -366,7 +371,7 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
     const pageable = /^\s*select\b/i.test(sql)
     const result = await api<QueryResult>(`/connections/${query.connectionId}/query`, { method: 'POST', body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId: resultTab.id } : { sql, requestId: resultTab.id } })
     resultTab.result = pageable ? pageResult(result) : result
-    resultTab.source = editableSource(sql, connection)
+    resultTab.sources = await editableSources(sql, connection, resultTab.result)
     if (pageable) pagedQueries[resultTab.id] = { connectionId: query.connectionId, sql, requestId: resultTab.id }
     updateTransactionStatus(query.connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
@@ -388,27 +393,43 @@ function pageResult(result: QueryResult): QueryResult {
   const rows = result.rows.slice(0, queryPageSize)
   return { ...result, rows, rowCount: rows.length, hasMore }
 }
-function editableSource(sql: string, connection: Connection): EditableResultSource | undefined {
-  if (!/^\s*select\b/i.test(sql) || /\b(join|union|intersect|except)\b/i.test(sql)) return
-  const match = sql.match(/\bfrom\s+((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*))?)/i)
-  if (!match) return
-  const source = match[1]
-  if (!source) return
-  const parts = source.split('.').map((part) => part.trim().replace(/^`|`$/g, ''))
-  const database = parts.length === 2 ? parts[0] : connection.initialDatabase
-  const table = parts.length === 2 ? parts[1] : parts[0]
-  if (!database || !table) return
-  return { connectionId: connection.id, database, table }
+async function editableSources(sql: string, connection: Connection, result: QueryResult): Promise<EditableResultSource[]> {
+  if (!/^\s*select\b/i.test(sql) || /\b(union|intersect|except)\b/i.test(sql)) return []
+  const references = [...sql.matchAll(/\b(?:from|join)\s+((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*))?)/gi)]
+    .map((match) => match[1]?.split('.').map((part) => part.trim().replace(/^`|`$/g, '')))
+    .filter((parts): parts is string[] => Boolean(parts?.length))
+    .map((parts) => ({ database: parts.length === 2 ? parts[0] : connection.initialDatabase, table: parts.length === 2 ? parts[1] : parts[0] }))
+    .filter((source): source is { database: string; table: string } => Boolean(source.database && source.table))
+  const uniqueReferences = [...new Map(references.map((source) => [`${source.database}.${source.table}`, source])).values()]
+  if (!uniqueReferences.length) return []
+  try {
+    const sources = await Promise.all(uniqueReferences.map(async (reference) => ({ ...reference, structure: await api<TableStructure>(`/connections/${connection.id}/databases/${encodeURIComponent(reference.database)}/tables/${encodeURIComponent(reference.table)}/structure`) })))
+    const counts = new Map<string, number>()
+    for (const column of result.columns) counts.set(column.name, (counts.get(column.name) ?? 0) + 1)
+    const owners = new Map<string, number>()
+    for (const source of sources) for (const column of source.structure.columns) owners.set(column.name, (owners.get(column.name) ?? 0) + 1)
+    return sources.flatMap(({ database, table, structure }) => {
+      const primaryKey = structure.constraints.find((constraint) => constraint.type === 'PRIMARY KEY')?.columns ?? structure.columns.filter((column) => column.key === 'PRI').map((column) => column.name)
+      if (!primaryKey.length || !primaryKey.every((column) => counts.get(column) === 1 && owners.get(column) === 1)) return []
+      const columns = structure.columns.map((column) => column.name).filter((column) => counts.get(column) === 1 && owners.get(column) === 1)
+      return columns.length ? [{ connectionId: connection.id, database, table, columns, primaryKey }] : []
+    })
+  } catch {
+    // A result can still be viewed when its source metadata is unavailable.
+    return []
+  }
 }
 async function saveResultEdits(resultTab: ResultTab, edited: QueryResult) {
-  if (!resultTab.result || !resultTab.source) { notifyError(t('grid.inlineEditUnsupported')); return }
+  if (!resultTab.result || !resultTab.sources?.length) { notifyError(t('grid.inlineEditUnsupported')); return }
   try {
-    const updates = queryResultEdits(resultTab.result, edited)
     let transaction: QueryResult | undefined
-    for (const update of updates) transaction = await api<QueryResult>(`/connections/${resultTab.source.connectionId}/rows/update`, { method: 'POST', body: { database: resultTab.source.database, table: resultTab.source.table, ...update } })
+    for (const source of resultTab.sources) {
+      const updates = queryResultEdits(resultTab.result, edited, { editableColumns: source.columns, keyColumns: source.primaryKey })
+      for (const update of updates) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/update`, { method: 'POST', body: { database: source.database, table: source.table, ...update } })
+    }
     resultTab.result = edited
     resultTab.editing = false
-    if (transaction) updateTransactionStatus(resultTab.source.connectionId, transaction.transactionPending, transaction.pendingStatements)
+    if (transaction) updateTransactionStatus(resultTab.sources[0]!.connectionId, transaction.transactionPending, transaction.pendingStatements)
     await loadHistory()
   } catch (error: any) { notifyError(error.message) }
 }
@@ -613,7 +634,7 @@ watch(() => workspace.activeConnectionId, () => {
     <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @settings="openSettings" />
     <div class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeConnections" />
     <section class="flex min-w-0 flex-1 flex-col">
-      <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reorder="workspace.moveTab" @new-query="newSQL" />
+      <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" :can-reopen="recentlyClosedTabs.length > 0" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reopen="reopenLastClosedTab" @reorder="workspace.moveTab" @new-query="newSQL" />
       <div v-if="activeTransaction?.pending && activeTransactionConnectionId" class="flex shrink-0 items-center justify-between gap-4 border-b border-amber-500/25 bg-amber-500/5 px-4 py-2 text-xs">
         <div class="flex min-w-0 items-center gap-2"><span class="truncate font-medium text-ink">{{ activeTransactionConnection?.name }}</span><span class="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-ink">{{ t('transaction.pending', { count: activeTransaction.pendingStatements }) }}</span></div>
         <div class="flex shrink-0 gap-2"><button class="rounded px-2 py-1 text-rose-700 hover:bg-amber-500/10 dark:text-rose-300" :disabled="committing" @click="requestCommit(activeTransactionConnectionId)">{{ t('transaction.rollback') }}</button><button class="rounded bg-amber-600 px-2.5 py-1 font-medium text-white disabled:opacity-50" :disabled="committing" @click="requestCommit(activeTransactionConnectionId)">{{ committing ? t('transaction.committing') : t('transaction.commit') }}</button></div>

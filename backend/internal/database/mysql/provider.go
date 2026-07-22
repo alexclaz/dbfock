@@ -104,17 +104,18 @@ func (p *Provider) ListTables(ctx context.Context, c models.Connection, dbName s
 		kind = "VIEW"
 	}
 	err = p.withDB(c, func(db *sql.DB) error {
-		rows, e := db.QueryContext(ctx, "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = ? AND table_type = ? ORDER BY table_name", dbName, kind)
+		rows, e := db.QueryContext(ctx, "SELECT t.table_name, t.table_type, COUNT(c.column_name) FROM information_schema.tables t LEFT JOIN information_schema.columns c ON c.table_schema = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = ? AND t.table_type = ? GROUP BY t.table_name, t.table_type ORDER BY t.table_name", dbName, kind)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var n, t string
-			if e = rows.Scan(&n, &t); e != nil {
+			var columnCount int
+			if e = rows.Scan(&n, &t, &columnCount); e != nil {
 				return e
 			}
-			out = append(out, models.TableInfo{Name: n, Type: t})
+			out = append(out, models.TableInfo{Name: n, Type: t, ColumnCount: columnCount})
 		}
 		return rows.Err()
 	})

@@ -44,30 +44,31 @@ watch(() => [props.connectionId, props.database], () => { load(); diagram.value 
 
 <template>
   <section class="flex h-full min-h-0 flex-col">
-    <header class="flex flex-wrap items-end justify-between gap-4 border-b border-line px-5 py-4 lg:px-7">
-      <div>
-        <div class="flex items-center gap-2"><Icon name="lucide:database" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold">{{ database }}</h1></div>
-        <p class="mt-1 text-sm text-muted">{{ t('database.tablesCount', { count: tables?.length ?? 0 }) }}</p>
-      </div>
-      <div class="flex items-end gap-3">
-        <div class="flex rounded-md border border-line p-0.5 text-xs">
+    <header class="space-y-3 border-b border-line px-5 py-4 lg:px-7">
+      <div class="flex items-center gap-2"><Icon name="lucide:database" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold">{{ database }}</h1></div>
+      <div class="flex rounded-md border border-line p-0.5 text-xs">
           <button type="button" class="rounded px-2.5 py-1" :class="section === 'tables' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('tables')">{{ t('database.viewTables') }}</button>
           <button type="button" class="rounded px-2.5 py-1" :class="section === 'diagram' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('diagram')">{{ t('database.viewDiagram') }}</button>
-        </div>
-        <label v-if="section === 'tables'" class="grid gap-1 text-xs font-medium text-muted"><span>{{ t('stats.filter') }}</span><input v-model="filter" class="field h-9 w-56" :placeholder="t('database.filterPlaceholder')" /></label>
       </div>
     </header>
+    <div v-if="section === 'tables'" class="border-b border-line bg-canvas/40 px-5 py-3 lg:px-7">
+      <label class="flex w-full max-w-md items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm">
+        <Icon name="lucide:search" class="h-4 w-4 shrink-0" aria-hidden="true" />
+        <span class="sr-only">{{ t('stats.filter') }}</span>
+        <input v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('database.filterPlaceholder')" />
+      </label>
+    </div>
 
     <div v-if="section === 'tables'" class="scrollbar min-h-0 flex-1 overflow-auto px-5 py-6 lg:px-7">
       <div v-if="loading" class="grid h-64 place-items-center text-sm text-muted">{{ t('tree.loadingTables') }}</div>
       <div v-else class="overflow-hidden rounded-lg border border-line bg-panel">
         <div class="scrollbar overflow-auto">
           <table class="min-w-full text-left text-sm">
-            <thead class="sticky top-0 bg-panel text-xs uppercase tracking-wide text-muted"><tr><th class="border-b border-line px-4 py-3 font-medium">{{ t('table.table') }}</th><th class="border-b border-line px-4 py-3 font-medium">{{ t('table.type') }}</th><th class="w-10 border-b border-line px-4 py-3" /></tr></thead>
+            <thead class="sticky top-0 bg-panel text-xs uppercase tracking-wide text-muted"><tr><th class="border-b border-line px-4 py-3 font-medium">{{ t('table.table') }}</th><th class="border-b border-line px-4 py-3 font-medium">{{ t('table.columns') }}</th><th class="w-10 border-b border-line px-4 py-3" /></tr></thead>
             <tbody>
               <tr v-for="table in filteredTables" :key="table.name" class="cursor-pointer border-b border-line last:border-b-0 hover:bg-canvas" @dblclick="emit('table', table.name)">
                 <td class="px-4 py-2.5 font-medium"><span class="flex items-center gap-2"><Icon name="lucide:table-2" class="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />{{ table.name }}</span></td>
-                <td class="px-4 py-2.5 text-muted">{{ table.type }}</td>
+                <td class="px-4 py-2.5 text-muted">{{ table.columnCount }}</td>
                 <td class="px-4 py-2.5 text-right"><button type="button" class="grid h-6 w-6 place-items-center rounded text-muted hover:bg-line hover:text-ink" :title="t('tree.viewTable')" :aria-label="t('tree.viewTable')" @click.stop="emit('table', table.name)"><Icon name="lucide:eye" class="h-3.5 w-3.5" aria-hidden="true" /></button></td>
               </tr>
             </tbody>

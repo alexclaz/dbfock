@@ -118,8 +118,9 @@ type DatabaseInfo struct {
 	Name string `json:"name"`
 }
 type TableInfo struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	ColumnCount int    `json:"columnCount"`
 }
 type ColumnInfo struct {
 	Name         string  `json:"name"`

@@ -83,7 +83,11 @@ watch(() => props.connection.status, () => loadDatabases())
           <h2 class="text-base font-semibold">{{ t('connectionHome.databases') }}</h2>
           <p class="mt-1 text-sm text-muted">{{ t('connectionHome.databasesDescription') }}</p>
         </div>
-        <label v-if="databases?.length" class="grid gap-1 text-xs font-medium text-muted"><span>{{ t('stats.filter') }}</span><input v-model="filter" class="field h-9 w-48" :placeholder="t('stats.filterPlaceholder')" /></label>
+        <label v-if="databases?.length" class="flex w-full max-w-md items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm">
+          <Icon name="lucide:search" class="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span class="sr-only">{{ t('stats.filter') }}</span>
+          <input v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('stats.filterPlaceholder')" />
+        </label>
       </div>
 
       <p v-if="connection.status !== 'connected'" class="mt-4 rounded-md border border-line bg-canvas px-3 py-2 text-sm text-muted">{{ t('connectionHome.connectPrompt') }}</p>

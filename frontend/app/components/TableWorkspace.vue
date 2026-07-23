@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DatabaseInfo, QueryResult, SchemaDiagram, TableInfo, TableStructure } from '~/types/database'
 import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits } from '~/utils/queryResult'
-import { parseTableImport, tableInsertStatements } from '~/utils/tableTransfer'
+import { parseTableImport, tableInsertStatements, type ImportedTableRows } from '~/utils/tableTransfer'
 
 type TableSection = 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl' | 'diagram' | 'tools'
 type TableToolsSection = 'import' | 'export' | 'migration' | 'maintenance'
@@ -30,6 +30,9 @@ const ddlCopied = ref(false)
 const ddlEl = ref<HTMLElement>()
 const importInput = ref<HTMLInputElement>()
 const transferring = ref(false)
+const importOptions = reactive({ truncateBefore: false, ignoreDuplicates: false })
+const pendingImport = ref<{ data: ImportedTableRows; columnTypes: Record<string, string> }>()
+const showImportTruncateConfirmation = ref(false)
 const sourceDatabases = ref<DatabaseInfo[]>([])
 const sourceTables = ref<TableInfo[]>([])
 const sourceLoading = ref(false)
@@ -218,6 +221,23 @@ async function exportTable(format: 'csv' | 'json') {
   finally { transferring.value = false }
 }
 function chooseImport() { if (!transferring.value) importInput.value?.click() }
+async function writeImport(imported: ImportedTableRows, columnTypes: Record<string, string>, truncateBefore: boolean) {
+  transferring.value = true
+  try {
+    if (truncateBefore) await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `TRUNCATE TABLE ${tableNameSQL()}`, historySql: `truncate ${props.database}.${props.table} before import` } })
+    let importedRows = 0
+    let transaction: QueryResult | undefined
+    const statements = tableInsertStatements(props.database, props.table, imported.columns, imported.rows, 80_000, columnTypes, importOptions.ignoreDuplicates)
+    for (const sql of statements) {
+      transaction = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql, historySql: `Import ${imported.rows.length} row(s) into ${props.database}.${props.table}` } })
+      importedRows += transaction.affectedRows
+    }
+    if (transaction) emit('transactionStatus', props.connectionId, transaction.transactionPending, transaction.pendingStatements)
+    await loadData()
+    notifySuccess(t('table.imported', { count: importedRows }))
+  } catch (cause: any) { notifyError(cause.message) }
+  finally { transferring.value = false }
+}
 async function importTable(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -233,19 +253,17 @@ async function importTable(event: Event) {
     structure.value = tableStructure
     const allowedColumns = new Set(tableStructure.columns.map((column) => column.name))
     if (!imported.columns.length || imported.columns.some((column) => !allowedColumns.has(column))) throw new Error(t('table.importColumns'))
-    let importedRows = 0
-    let transaction: QueryResult | undefined
     const columnTypes = Object.fromEntries(tableStructure.columns.map((column) => [column.name, column.databaseType]))
-    const statements = tableInsertStatements(props.database, props.table, imported.columns, imported.rows, 80_000, columnTypes)
-    for (const sql of statements) {
-      transaction = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql, historySql: `Import ${imported.rows.length} row(s) into ${props.database}.${props.table}` } })
-      importedRows += transaction.affectedRows
-    }
-    if (transaction) emit('transactionStatus', props.connectionId, transaction.transactionPending, transaction.pendingStatements)
-    await loadData()
-    notifySuccess(t('table.imported', { count: importedRows }))
+    if (importOptions.truncateBefore) { pendingImport.value = { data: imported, columnTypes }; showImportTruncateConfirmation.value = true; return }
+    await writeImport(imported, columnTypes, false)
   } catch (cause: any) { notifyError(cause.message) }
   finally { transferring.value = false }
+}
+async function confirmImportTruncate() {
+  showImportTruncateConfirmation.value = false
+  const pending = pendingImport.value
+  pendingImport.value = undefined
+  if (pending) await writeImport(pending.data, pending.columnTypes, true)
 }
 
 watch(() => source.connectionId, async (connectionId) => {
@@ -316,7 +334,7 @@ watch(error, (message) => { if (message) { notifyError(message); error.value = '
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'maintenance' ? 'tools-nav-active' : ''" @click="toolsSection = 'maintenance'"><Icon name="lucide:wrench" class="h-4 w-4" aria-hidden="true" />{{ t('table.tools.maintenanceTitle') }}</button>
         </nav>
         <div class="min-w-0 flex-1 pb-8">
-          <section v-if="toolsSection === 'import'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('table.tools.importTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.importDescription') }}</p><input ref="importInput" class="sr-only" type="file" accept=".csv,text/csv,.json,application/json" @change="importTable" /><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="transferring" @click="chooseImport">{{ transferring ? t('table.tools.importing') : t('table.import') }}</button></section>
+          <section v-if="toolsSection === 'import'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('table.tools.importTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.importDescription') }}</p><div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="importOptions.truncateBefore" class="mt-0.5" type="checkbox" :disabled="transferring" /><span><span class="font-medium">{{ t('table.tools.truncateBeforeImport') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.truncateBeforeImportDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="importOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="transferring" /><span><span class="font-medium">{{ t('table.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.ignoreDuplicatesDescription') }}</span></span></label></div><input ref="importInput" class="sr-only" type="file" accept=".csv,text/csv,.json,application/json" @change="importTable" /><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="transferring" @click="chooseImport">{{ transferring ? t('table.tools.importing') : t('table.import') }}</button></section>
           <section v-else-if="toolsSection === 'export'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('table.tools.exportTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.exportDescription') }}</p><div class="mt-6 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="transferring" @click="exportTable('csv')">{{ t('table.exportCsv') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="transferring" @click="exportTable('json')">{{ t('table.exportJson') }}</button></div></section>
           <section v-else-if="toolsSection === 'migration'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('table.tools.migrationTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.migrationDescription', { table: `${database}.${table}` }) }}</p><div class="mt-6 grid gap-3 md:grid-cols-3"><label class="grid gap-1.5 text-sm font-medium">{{ t('table.tools.sourceConnection') }}<AppSelect v-model="source.connectionId" :options="sourceConnectionOptions" :disabled="migrating" :placeholder="t('table.tools.chooseConnection')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.tools.sourceDatabase') }}<AppSelect v-model="source.database" :options="sourceDatabaseOptions" :disabled="migrating || sourceLoading || !source.connectionId" :placeholder="t('table.tools.chooseDatabase')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.tools.sourceTable') }}<AppSelect v-model="source.table" :options="sourceTableOptions" :disabled="migrating || sourceLoading || !source.database" :placeholder="t('table.tools.chooseTable')" /></label></div><div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.truncateBefore" class="mt-0.5" type="checkbox" :disabled="migrating" /><span><span class="font-medium">{{ t('table.tools.truncateBefore') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.truncateBeforeDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="migrating" /><span><span class="font-medium">{{ t('table.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.ignoreDuplicatesDescription') }}</span></span></label></div><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="migrating || sourceLoading || !source.table" @click="() => migrateTable()">{{ migrating ? t('table.tools.migrating') : t('table.tools.migrate') }}</button></section>
           <section v-else class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('table.tools.maintenanceTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.maintenanceDescription') }}</p><div class="mt-6 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('check')">{{ maintenanceRunning === 'check' ? t('table.tools.running') : t('table.tools.check') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('analyze')">{{ maintenanceRunning === 'analyze' ? t('table.tools.running') : t('table.tools.analyze') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('repair')">{{ maintenanceRunning === 'repair' ? t('table.tools.running') : t('table.tools.repair') }}</button><button type="button" class="rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="showTruncateConfirmation = true">{{ t('table.tools.truncate') }}</button></div><div v-if="maintenanceResult?.columns.length" class="scrollbar mt-5 overflow-auto rounded-md border border-line"><table class="min-w-full text-left text-xs"><thead class="bg-canvas text-muted"><tr><th v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2 font-medium">{{ column.name }}</th></tr></thead><tbody><tr v-for="(row, index) in maintenanceResult.rows" :key="index" class="border-t border-line"><td v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2">{{ row[column.name] }}</td></tr></tbody></table></div></section>
@@ -327,6 +345,7 @@ watch(error, (message) => { if (message) { notifyError(message); error.value = '
     <div v-else class="flex min-h-0 flex-1 flex-col"><div class="flex items-center justify-end border-b border-line px-4 py-2"><button type="button" class="grid rounded p-1 hover:bg-canvas disabled:opacity-60" :title="ddlCopied ? t('grid.copied') : t('grid.copy')" :aria-label="ddlCopied ? t('grid.copied') : t('grid.copy')" :disabled="!structure?.ddl" @click="copyDDL"><Icon :name="ddlCopied ? 'lucide:check' : 'lucide:copy'" class="h-4 w-4" aria-hidden="true" /></button></div><pre ref="ddlEl" tabindex="0" class="scrollbar flex-1 overflow-auto whitespace-pre-wrap p-4 font-mono text-xs outline-none" @keydown="selectAllDdl">{{ structure?.ddl || t('table.loadingDdl') }}</pre></div>
     <AppConfirmDialog v-model="showTruncateConfirmation" :title="t('table.tools.truncateTitle')" :description="t('table.tools.truncateDescription', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmTruncate" />
     <AppConfirmDialog v-model="showMigrationTruncateConfirmation" :title="t('table.tools.truncateBeforeTitle')" :description="t('table.tools.truncateBeforeConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncateAndMigrate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmMigrationTruncate" />
+    <AppConfirmDialog v-model="showImportTruncateConfirmation" :title="t('table.tools.truncateBeforeImportTitle')" :description="t('table.tools.truncateBeforeImportConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncateAndImport')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmImportTruncate" />
   </section>
 </template>
 

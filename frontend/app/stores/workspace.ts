@@ -12,8 +12,14 @@ type SavedWorkspace = {
   tabs?: WorkspaceTab[]
   activeTabId?: string
   activeConnectionId?: string
+  activeTabIdsByConnection?: Record<string, string>
   savedQueries?: SavedQuery[]
   smartQueries?: SmartQuery[]
+}
+
+function parseActiveTabIdsByConnection(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(Object.entries(value).filter(([connectionId, tabId]) => typeof connectionId === 'string' && typeof tabId === 'string'))
 }
 
 function isAIAgentChat(value: unknown): value is AIAgentChat {
@@ -86,6 +92,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeConnectionId = ref<string>()
   const tabs = ref<WorkspaceTab[]>(defaultTabs())
   const activeTabId = ref('welcome')
+  const activeTabIdsByConnection = ref<Record<string, string>>({})
   const savedQueries = ref<SavedQuery[]>([])
   const smartQueries = ref<SmartQuery[]>([])
   const activeConnection = computed(() => connections.value.find((item) => item.id === activeConnectionId.value))
@@ -112,6 +119,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       else tabs.value = orderedTabs([...tabs.value, ...defaultTabs()])
       savedQueries.value = parseSavedQueries(saved.savedQueries)
       smartQueries.value = parseSmartQueries(saved.smartQueries)
+      activeTabIdsByConnection.value = parseActiveTabIdsByConnection(saved.activeTabIdsByConnection)
       if (saved.activeTabId && tabs.value.some((tab) => tab.id === saved.activeTabId)) activeTabId.value = saved.activeTabId
       if (typeof saved.activeConnectionId === 'string') activeConnectionId.value = saved.activeConnectionId
     } catch { /* Start with the default workspace when saved state is invalid. */ }
@@ -121,18 +129,46 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function persistWorkspace() {
     if (import.meta.client && restored.value) {
       localStorage.setItem(storageKey, JSON.stringify({
-        version: 1,
+        version: 2,
         // The job ID is persisted so an in-flight backend job can be recovered after a reload.
         tabs: tabs.value.map(({ aiStatus: _aiStatus, ...tab }) => tab),
         activeTabId: activeTabId.value,
         activeConnectionId: activeConnectionId.value,
+        activeTabIdsByConnection: activeTabIdsByConnection.value,
         savedQueries: savedQueries.value,
         smartQueries: smartQueries.value,
       }))
     }
   }
 
-  watch([tabs, activeTabId, activeConnectionId, savedQueries, smartQueries], persistWorkspace, { deep: true, flush: 'sync' })
+  watch([tabs, activeTabId, activeConnectionId, activeTabIdsByConnection, savedQueries, smartQueries], persistWorkspace, { deep: true, flush: 'sync' })
+
+  function rememberActiveTab(tabId = activeTabId.value) {
+    const tab = tabs.value.find((item) => item.id === tabId)
+    if (tab?.connectionId) activeTabIdsByConnection.value[tab.connectionId] = tab.id
+  }
+
+  function restoreActiveTabForConnection(connectionId?: string) {
+    if (!connectionId) return
+    const rememberedTabId = activeTabIdsByConnection.value[connectionId]
+    const rememberedTab = tabs.value.find((tab) => tab.id === rememberedTabId && tab.connectionId === connectionId)
+    const currentTab = tabs.value.find((tab) => tab.id === activeTabId.value)
+
+    if (rememberedTab) {
+      activeTabId.value = rememberedTab.id
+    } else if (currentTab?.connectionId !== connectionId) {
+      activeTabId.value = tabs.value.find((tab) => tab.connectionId === connectionId)?.id || homeTabId
+    }
+  }
+
+  watch(activeTabId, rememberActiveTab, { flush: 'sync' })
+  watch(activeConnectionId, (connectionId, previousConnectionId) => {
+    // On initial workspace restore, keep a selected global tab (Home,
+    // Settings, etc.). Only a real connection switch should replace it.
+    if (!previousConnectionId) return
+    rememberActiveTab()
+    restoreActiveTabForConnection(connectionId)
+  }, { flush: 'sync' })
 
   async function refreshConnections() {
     connections.value = (await api<Connection[]>('/connections')) ?? []

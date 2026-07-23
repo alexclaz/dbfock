@@ -4,6 +4,7 @@ import type { Connection, DatabaseInfo, TableInfo } from '~/types/database'
 const props = defineProps<{ connections: Connection[]; activeConnectionId?: string; width?: number }>()
 const emit = defineEmits<{ choose: [id: string]; table: [connection: Connection, database: string, table: string]; database: [connection: Connection, database: string]; connectionHome: [connection: Connection]; add: []; home: []; saved: []; smart: []; settings: [] }>()
 const api = useApi()
+const workspace = useWorkspaceStore()
 const { t } = useI18n()
 const search = ref('')
 const databases = reactive<Record<string, DatabaseInfo[]>>({})
@@ -92,6 +93,15 @@ function clearConnectionCache(connectionId: string) {
   for (const key of Object.keys(tables)) if (key.startsWith(`d:${connectionId}:`)) delete tables[key]
   for (const key of [...expanded]) if (key.startsWith(`d:${connectionId}:`)) expanded.delete(key)
 }
+async function connectConnection(connection: Connection) {
+  emit('choose', connection.id)
+  if (connection.status === 'connected' || loading.has(`c:${connection.id}`)) return
+  const key = `c:${connection.id}`
+  loading.add(key)
+  try { await workspace.connectConnection(connection.id) }
+  catch (cause: unknown) { showError(cause) }
+  finally { loading.delete(key) }
+}
 const lastConnectionStatus = reactive<Record<string, Connection['status']>>({})
 watch(() => props.connections.map((connection) => ({ id: connection.id, status: connection.status })), (list) => {
   for (const { id, status } of list) {
@@ -130,7 +140,7 @@ async function toggleDatabase(connection: Connection, database: string) {
       <div v-for="connection in filteredConnections" :key="connection.id">
         <div class="group relative flex items-center gap-1 rounded-md px-1 py-1 hover:bg-canvas" :class="activeConnectionId === connection.id ? 'bg-canvas' : ''">
           <button type="button" class="grid w-5 place-items-center text-muted disabled:opacity-40" :disabled="connection.status !== 'connected'" @click.stop="toggleConnection(connection)"><Icon :name="expanded.has(`c:${connection.id}`) ? 'lucide:chevron-down' : 'lucide:chevron-right'" class="h-3.5 w-3.5" aria-hidden="true" /></button>
-          <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left text-sm" @click="emit('choose', connection.id)" @dblclick="$emit('connectionHome', connection)"><i class="h-2.5 w-2.5 rounded-full ring-2 ring-panel" :style="{ backgroundColor: connection.color }" /><i class="h-1.5 w-1.5 rounded-full" :class="connection.status === 'connected' ? 'bg-emerald-500' : 'bg-muted'" /><span class="truncate">{{ connection.name }}</span><span v-if="connection.environment === 'production'" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('connection.production') }}</span></button>
+          <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left text-sm" @click="emit('choose', connection.id)" @dblclick="connectConnection(connection)"><i class="h-2.5 w-2.5 rounded-full ring-2 ring-panel" :style="{ backgroundColor: connection.color }" /><i class="h-1.5 w-1.5 rounded-full" :class="connection.status === 'connected' ? 'bg-emerald-500' : 'bg-muted'" /><span class="truncate">{{ connection.name }}</span><span v-if="connection.environment === 'production'" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('connection.production') }}</span></button>
           <button type="button" class="grid h-6 w-6 shrink-0 place-items-center rounded text-muted opacity-0 hover:bg-line hover:text-ink group-hover:opacity-100" :title="t('tree.viewConnection')" :aria-label="t('tree.viewConnection')" @click.stop="$emit('connectionHome', connection)"><Icon name="lucide:eye" class="h-3.5 w-3.5" aria-hidden="true" /></button>
         </div>
         <div v-if="expanded.has(`c:${connection.id}`)" class="ml-3 border-l border-line pl-2"><p v-if="loading.has(`c:${connection.id}`)" class="px-2 py-1 text-xs text-muted">{{ t('tree.loadingDatabases') }}</p><template v-for="database in databases[connection.id]" :key="database.name"><div class="group flex items-center gap-1 rounded px-1 py-1 hover:bg-canvas"><button type="button" class="grid w-5 place-items-center text-muted" @click="toggleDatabase(connection,database.name)"><Icon :name="expanded.has(`d:${connection.id}:${database.name}`) ? 'lucide:chevron-down' : 'lucide:chevron-right'" class="h-3.5 w-3.5" aria-hidden="true" /></button><button type="button" class="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-sm" @dblclick="$emit('database', connection, database.name)"><Icon name="lucide:database" class="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />{{ database.name }}</button><button type="button" class="grid h-5 w-5 shrink-0 place-items-center rounded text-muted opacity-0 hover:bg-line hover:text-ink group-hover:opacity-100" :title="t('tree.viewDatabase')" :aria-label="t('tree.viewDatabase')" @click.stop="$emit('database', connection, database.name)"><Icon name="lucide:eye" class="h-3.5 w-3.5" aria-hidden="true" /></button></div><div v-if="expanded.has(`d:${connection.id}:${database.name}`)" class="ml-3 border-l border-line pl-2"><p v-if="loading.has(`d:${connection.id}:${database.name}`)" class="px-2 py-1 text-xs text-muted">{{ t('tree.loadingTables') }}</p><div v-for="table in visibleTables(connection.id, database.name)" :key="table.name" class="group flex items-center gap-1 rounded px-1 py-1 text-sm text-muted hover:bg-canvas hover:text-ink"><button type="button" class="flex min-w-0 flex-1 items-center gap-2 truncate text-left" @dblclick="$emit('table', connection, database.name, table.name)"><Icon name="lucide:table-2" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{{ table.name }}</button><button type="button" class="grid h-5 w-5 shrink-0 place-items-center rounded opacity-0 hover:bg-line hover:text-ink group-hover:opacity-100" :title="t('tree.viewTable')" :aria-label="t('tree.viewTable')" @click.stop="$emit('table', connection, database.name, table.name)"><Icon name="lucide:eye" class="h-3.5 w-3.5" aria-hidden="true" /></button></div></div></template></div>

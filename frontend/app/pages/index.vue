@@ -16,7 +16,7 @@ type ResultTab = {
 type SmartResultTab = ResultTab & { connectionId: string; smartQueryId: string }
 type AISettings = { configured: boolean }
 type PendingSave = { tab: WorkspaceTab; resolve: (saved: boolean) => void }
-type PendingConfirmation = { title: string; description: string; confirmLabel: string; tone?: 'default' | 'danger'; resolve: (confirmed: boolean) => void }
+type PendingConfirmation = { title: string; description: string; confirmLabel: string; cancelLabel?: string; tone?: 'default' | 'danger'; resolve: (confirmed: boolean) => void }
 
 const workspace = useWorkspaceStore()
 const api = useApi()
@@ -178,7 +178,7 @@ async function requestCloseTabs(targets: WorkspaceTab[]) {
 
   for (const tab of targets) {
     const needsSavePrompt = tab.type === 'sql' && tab.sql?.trim() && (!tab.savedQueryId || tab.dirty)
-    if (needsSavePrompt && await confirmAction({ title: t('tabs.saveChangesTitle'), description: t('tabs.saveBeforeClose', { name: tab.title }), confirmLabel: t('tabs.saveAndClose') })) {
+    if (needsSavePrompt && await confirmAction({ title: t('tabs.saveChangesTitle'), description: t('tabs.saveBeforeClose', { name: tab.title }), confirmLabel: t('tabs.saveAndClose'), cancelLabel: t('tabs.closeOnly') })) {
       if (!await saveQuery(tab)) return
     }
   }
@@ -682,6 +682,6 @@ watch(() => workspace.activeConnectionId, () => {
     <TransactionCommitModal v-if="commitConnectionId" :model-value="true" :connection-name="workspace.connections.find((connection) => connection.id === commitConnectionId)?.name || ''" :statements="transactionStatus[commitConnectionId]?.statements || []" :committing="committing" @update:model-value="commitConnectionId = undefined" @commit="commitTransaction" @rollback="rollbackTransaction" />
     <GlobalSearch v-if="showGlobalSearch" :tabs="workspace.tabs" :active-tab-id="workspace.activeTabId" :saved-queries="connectionSavedQueries" :smart-queries="workspace.smartQueries" :connections="workspace.connections" @close="showGlobalSearch = false" @select-tab="workspace.activeTabId = $event" @open-saved-query="openSavedQueryById" @open-smart-query="openSmartQueryById" @new-query="newSQL" @open-settings="openSettings" />
     <QuerySaveDialog :model-value="Boolean(pendingSave)" :initial-value="pendingSave?.tab.title || ''" :title="t('query.saveTitle')" :description="t('query.saveDescription')" :label="t('query.nameLabel')" :confirm-label="t('query.saveAction')" :cancel-label="t('connection.cancel')" @update:model-value="(value) => { if (!value) resolveSave() }" @confirm="resolveSave" />
-    <AppConfirmDialog :model-value="Boolean(pendingConfirmation)" :title="pendingConfirmation?.title || ''" :description="pendingConfirmation?.description || ''" :confirm-label="pendingConfirmation?.confirmLabel || ''" :cancel-label="t('connection.cancel')" :tone="pendingConfirmation?.tone" @update:model-value="(value) => { if (!value) resolveConfirmation(false) }" @confirm="resolveConfirmation(true)" />
+    <AppConfirmDialog :model-value="Boolean(pendingConfirmation)" :title="pendingConfirmation?.title || ''" :description="pendingConfirmation?.description || ''" :confirm-label="pendingConfirmation?.confirmLabel || ''" :cancel-label="pendingConfirmation?.cancelLabel || t('connection.cancel')" :tone="pendingConfirmation?.tone" @update:model-value="(value) => { if (!value) resolveConfirmation(false) }" @confirm="resolveConfirmation(true)" />
   </div>
 </template>

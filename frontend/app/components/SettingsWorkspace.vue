@@ -261,7 +261,7 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
           <button type="button" class="settings-nav flex items-center gap-2" :class="activeSection === 'ai' ? 'settings-nav-active' : ''" @click="selectSection('ai')"><Icon name="lucide:sparkles" class="h-4 w-4" aria-hidden="true" />{{ t('settings.aiAgent') }}</button>
           <button type="button" class="settings-nav flex items-center gap-2" :class="activeSection === 'audit' ? 'settings-nav-active' : ''" @click="selectSection('audit')"><Icon name="lucide:scroll-text" class="h-4 w-4" aria-hidden="true" />{{ t('settings.aiAudit') }}</button>
           <button type="button" class="settings-nav flex items-center gap-2" :class="activeSection === 'backup' ? 'settings-nav-active' : ''" @click="selectSection('backup')"><Icon name="lucide:cloud" class="h-4 w-4" aria-hidden="true" />{{ t('settings.backup') }}</button>
-          <button type="button" class="settings-nav" :class="activeSection === 'about' ? 'settings-nav-active' : ''" @click="selectSection('about')">ⓘ {{ t('settings.about') }}</button>
+          <button type="button" class="settings-nav flex items-center gap-2" :class="activeSection === 'about' ? 'settings-nav-active' : ''" @click="selectSection('about')"><Icon name="lucide:info" class="h-4 w-4" aria-hidden="true" />{{ t('settings.about') }}</button>
         </nav>
 
         <div class="min-w-0 flex-1 pb-8" @change="commitTextScale">

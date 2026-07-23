@@ -1,5 +1,5 @@
 <script setup lang="ts">
-type ThemePreference = 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'codex' | 'monokai' | 'vscode-light' | 'vscode-dark'
+type ThemePreference = 'dbfock-light' | 'dbfock-dark' | 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'supabase' | 'monokai' | 'vscode-light' | 'vscode-dark'
 
 const theme = useState<ThemePreference>('theme-preference', () => 'vscode-dark')
 const { restoreLocale } = useI18n()
@@ -12,7 +12,7 @@ function confirmLeaving(event: BeforeUnloadEvent) {
 
 function applyTheme() {
   if (!import.meta.client) return
-  const dark = theme.value !== 'github-light' && theme.value !== 'vscode-light'
+  const dark = theme.value !== 'dbfock-light' && theme.value !== 'github-light' && theme.value !== 'vscode-light'
   document.documentElement.dataset.theme = theme.value
   document.documentElement.classList.toggle('dark', dark)
 }
@@ -31,7 +31,8 @@ watch(theme, () => { if (import.meta.client) { localStorage.setItem('dbfock.them
 onMounted(() => {
   restoreLocale()
   const saved = localStorage.getItem('dbfock.theme') ?? localStorage.getItem('theme-mode')
-  if (saved === 'github-light' || saved === 'github-dark' || saved === 'one-dark' || saved === 'dracula' || saved === 'cobalt2' || saved === 'claude-code' || saved === 'codex' || saved === 'monokai' || saved === 'vscode-light' || saved === 'vscode-dark') theme.value = saved
+  if (saved === 'codex') theme.value = 'supabase'
+  else if (saved === 'dbfock-light' || saved === 'dbfock-dark' || saved === 'github-light' || saved === 'github-dark' || saved === 'one-dark' || saved === 'dracula' || saved === 'cobalt2' || saved === 'claude-code' || saved === 'supabase' || saved === 'monokai' || saved === 'vscode-light' || saved === 'vscode-dark') theme.value = saved
   else if (saved === 'light') theme.value = 'github-light'
   else if (saved === 'dark') theme.value = 'vscode-dark'
   else if (saved === 'auto' || saved === 'system') theme.value = 'vscode-dark'

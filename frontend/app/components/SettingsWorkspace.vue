@@ -3,7 +3,7 @@ import type { Locale } from '~/composables/useI18n'
 import { DBeaverNoMySQLConnectionsError, parseDBeaverProject, type DBeaverMySQLConnection } from '~/utils/dbeaverProject'
 
 type Provider = 'openai' | 'openrouter' | 'anthropic' | 'ollama'
-type ThemePreference = 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'codex' | 'monokai' | 'vscode-light' | 'vscode-dark'
+type ThemePreference = 'dbfock-light' | 'dbfock-dark' | 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'supabase' | 'monokai' | 'vscode-light' | 'vscode-dark'
 type SettingsSection = 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup' | 'about'
 type ProviderOption = { value: Provider; label: string; defaultModel: string; baseUrl: string; apiKeyHint: string }
 type AISettings = { configured: boolean; provider?: Provider; model?: string; baseUrl?: string; hasApiKey?: boolean }
@@ -47,6 +47,8 @@ const shortcuts = [
   { label: 'settings.shortcutCommentBlock', keys: '⌘/ / Ctrl+/' },
 ] as const
 const themeOptions: { value: ThemePreference; label: string; description: string; preview: string[] }[] = [
+  { value: 'dbfock-dark', label: 'theme.dbfockDark', description: 'theme.dbfockDarkDescription', preview: ['#111926', '#172235', '#ff7849'] },
+  { value: 'dbfock-light', label: 'theme.dbfockLight', description: 'theme.dbfockLightDescription', preview: ['#fbfaf7', '#f2efe8', '#d5532b'] },
   { value: 'vscode-dark', label: 'theme.vscodeDark', description: 'theme.vscodeDarkDescription', preview: ['#1e1e1e', '#252526', '#007acc'] },
   { value: 'vscode-light', label: 'theme.vscodeLight', description: 'theme.vscodeLightDescription', preview: ['#ffffff', '#f3f3f3', '#0078d4'] },
   { value: 'github-light', label: 'theme.githubLight', description: 'theme.githubLightDescription', preview: ['#ffffff', '#f6f8fa', '#0969da'] },
@@ -55,7 +57,7 @@ const themeOptions: { value: ThemePreference; label: string; description: string
   { value: 'dracula', label: 'theme.dracula', description: 'theme.draculaDescription', preview: ['#282a36', '#44475a', '#bd93f9'] },
   { value: 'cobalt2', label: 'theme.cobalt2', description: 'theme.cobalt2Description', preview: ['#193549', '#1d3b51', '#ffc600'] },
   { value: 'claude-code', label: 'theme.claudeCode', description: 'theme.claudeCodeDescription', preview: ['#1c1b1a', '#272522', '#d97757'] },
-  { value: 'codex', label: 'theme.codex', description: 'theme.codexDescription', preview: ['#111111', '#1a1a1a', '#10a37f'] },
+  { value: 'supabase', label: 'theme.supabase', description: 'theme.supabaseDescription', preview: ['#111111', '#1a1a1a', '#10a37f'] },
   { value: 'monokai', label: 'theme.monokai', description: 'theme.monokaiDescription', preview: ['#272822', '#3e3d32', '#a6e22e'] },
 ]
 const form = reactive({ provider: 'openai' as Provider, model: 'gpt-5.4', baseUrl: 'https://api.openai.com/v1', apiKey: '' })

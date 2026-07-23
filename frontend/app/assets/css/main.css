@@ -7,6 +7,16 @@
   --editor-canvas: 255 255 255; --editor-panel: 246 248 250; --editor-line: 208 215 222; --editor-ink: 31 35 40; --editor-muted: 101 109 118; --editor-active: 221 234 255; --editor-selection: 84 174 255 / 0.27; --editor-tooltip: 255 255 255;
   --syntax-key: 130 80 223; --syntax-string: 15 123 66; --syntax-number: 5 80 174; --syntax-boolean: 207 34 46; --syntax-null: 101 109 118; --syntax-comment: 101 109 118; --syntax-operator: 130 80 223;
 }
+:root[data-theme='dbfock-light'] {
+  --canvas: 251 250 247; --panel: 242 239 232; --line: 220 216 205; --ink: 30 39 54; --muted: 96 108 127; --accent: 213 83 43;
+  --editor-canvas: 255 254 251; --editor-panel: 246 243 237; --editor-line: 220 216 205; --editor-ink: 30 39 54; --editor-muted: 109 119 135; --editor-active: 255 232 218; --editor-selection: 213 83 43 / 0.22; --editor-tooltip: 255 254 251;
+  --syntax-key: 109 40 217; --syntax-string: 22 133 93; --syntax-number: 192 75 19; --syntax-boolean: 190 24 93; --syntax-null: 109 119 135; --syntax-comment: 133 143 157; --syntax-operator: 36 99 235;
+}
+:root[data-theme='dbfock-dark'] {
+  --canvas: 17 25 38; --panel: 23 34 53; --line: 45 60 82; --ink: 231 238 248; --muted: 147 164 187; --accent: 255 120 73;
+  --editor-canvas: 14 22 34; --editor-panel: 20 31 48; --editor-line: 45 60 82; --editor-ink: 231 238 248; --editor-muted: 147 164 187; --editor-active: 31 48 74; --editor-selection: 255 120 73 / 0.3; --editor-tooltip: 28 42 64;
+  --syntax-key: 167 139 250; --syntax-string: 94 234 212; --syntax-number: 251 191 36; --syntax-boolean: 251 113 133; --syntax-null: 147 164 187; --syntax-comment: 100 116 139; --syntax-operator: 125 211 252;
+}
 :root[data-theme='github-dark'] {
   --canvas: 13 17 23; --panel: 22 27 34; --line: 48 54 61; --ink: 230 237 243; --muted: 139 148 158; --accent: 47 129 247;
   --editor-canvas: 13 17 23; --editor-panel: 22 27 34; --editor-line: 48 54 61; --editor-ink: 230 237 243; --editor-muted: 139 148 158; --editor-active: 22 53 91; --editor-selection: 38 97 173 / 0.51; --editor-tooltip: 22 27 34;
@@ -32,7 +42,7 @@
   --editor-canvas: 28 27 26; --editor-panel: 39 37 34; --editor-line: 70 66 61; --editor-ink: 244 240 230; --editor-muted: 180 171 157; --editor-active: 55 49 43; --editor-selection: 120 93 72 / 0.52; --editor-tooltip: 45 42 38;
   --syntax-key: 229 151 107; --syntax-string: 167 201 147; --syntax-number: 214 176 110; --syntax-boolean: 222 122 122; --syntax-null: 180 171 157; --syntax-comment: 142 133 121; --syntax-operator: 216 178 120;
 }
-:root[data-theme='codex'] {
+:root[data-theme='supabase'] {
   --canvas: 17 17 17; --panel: 26 26 26; --line: 48 48 48; --ink: 236 236 236; --muted: 163 163 163; --accent: 16 163 127;
   --editor-canvas: 17 17 17; --editor-panel: 26 26 26; --editor-line: 48 48 48; --editor-ink: 236 236 236; --editor-muted: 145 145 145; --editor-active: 38 38 38; --editor-selection: 16 163 127 / 0.28; --editor-tooltip: 32 32 32;
   --syntax-key: 94 234 212; --syntax-string: 134 239 172; --syntax-number: 253 224 71; --syntax-boolean: 94 234 212; --syntax-null: 163 163 163; --syntax-comment: 115 115 115; --syntax-operator: 236 236 236;

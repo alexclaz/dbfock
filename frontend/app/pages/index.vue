@@ -635,7 +635,7 @@ watch(() => workspace.activeConnectionId, () => {
 
 <template>
   <div class="flex h-full">
-    <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @settings="openSettings" />
+    <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @new-query="openSQLForConnection($event.id)" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @settings="openSettings" />
     <div class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeConnections" />
     <section class="flex min-w-0 flex-1 flex-col">
       <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" :can-reopen="recentlyClosedTabs.length > 0" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reopen="reopenLastClosedTab" @reorder="workspace.moveTab" @new-query="newSQL" />

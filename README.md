@@ -78,7 +78,7 @@ DBfock is currently distributed without Apple Developer ID notarization. If you 
 ### Customization
 
 - Interface available in English and Brazilian Portuguese.
-- Themes for GitHub, VS Code, One Dark, Dracula, Cobalt2, Claude Code, Codex, and Monokai.
+- Themes for DBfock Light, DBfock Dark, GitHub, VS Code, One Dark, Dracula, Cobalt2, Claude Code, Supabase, and Monokai.
 - Text scale controls.
 - Keyboard shortcut reference in settings.
 

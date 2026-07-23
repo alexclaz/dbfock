@@ -335,7 +335,7 @@ function mountSearchControls() {
 
 const theme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'rgb(var(--editor-canvas))', color: 'rgb(var(--editor-ink))', fontSize: 'var(--ide-editor-font-size, 13px)' },
-  '.cm-scroller': { fontFamily: 'JetBrains Mono, SFMono-Regular, Consolas, monospace', lineHeight: 'var(--ide-editor-line-height, 22px)' },
+  '.cm-scroller': { fontFamily: 'var(--code-font)', lineHeight: 'var(--ide-editor-line-height, 22px)' },
   '.cm-content': { padding: '10px 0' },
   '.cm-gutters': { backgroundColor: 'rgb(var(--editor-panel))', color: 'rgb(var(--editor-muted))', border: 'none' },
   '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'rgb(var(--editor-active))' },

@@ -1,8 +1,17 @@
 <script setup lang="ts">
+import '@fontsource/source-code-pro/400.css'
+import '@fontsource/source-code-pro/700.css'
+import '@fontsource/ibm-plex-sans/400.css'
+import '@fontsource/ibm-plex-sans/600.css'
+import '@fontsource/ibm-plex-sans/700.css'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/700.css'
+
 type ThemePreference = 'dbfock-light' | 'dbfock-dark' | 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'supabase' | 'monokai' | 'vscode-light' | 'vscode-dark'
 
 const theme = useState<ThemePreference>('theme-preference', () => 'vscode-dark')
 const { restoreLocale } = useI18n()
+const { restoreFontPreferences } = useFontPreferences()
 
 function confirmLeaving(event: BeforeUnloadEvent) {
   // Browsers intentionally provide the dialog text to prevent abusive custom prompts.
@@ -30,6 +39,7 @@ useHead({
 watch(theme, () => { if (import.meta.client) { localStorage.setItem('dbfock.theme', theme.value); applyTheme() } })
 onMounted(() => {
   restoreLocale()
+  restoreFontPreferences()
   const saved = localStorage.getItem('dbfock.theme') ?? localStorage.getItem('theme-mode')
   if (saved === 'codex') theme.value = 'supabase'
   else if (saved === 'dbfock-light' || saved === 'dbfock-dark' || saved === 'github-light' || saved === 'github-dark' || saved === 'one-dark' || saved === 'dracula' || saved === 'cobalt2' || saved === 'claude-code' || saved === 'supabase' || saved === 'monokai' || saved === 'vscode-light' || saved === 'vscode-dark') theme.value = saved

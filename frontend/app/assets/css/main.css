@@ -3,6 +3,8 @@
 @tailwind utilities;
 
 :root, :root[data-theme='github-light'] {
+  --app-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --code-font: "Source Code Pro", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --canvas: 255 255 255; --panel: 246 248 250; --line: 208 215 222; --ink: 31 35 40; --muted: 89 99 110; --accent: 9 105 218;
   --editor-canvas: 255 255 255; --editor-panel: 246 248 250; --editor-line: 208 215 222; --editor-ink: 31 35 40; --editor-muted: 101 109 118; --editor-active: 221 234 255; --editor-selection: 84 174 255 / 0.27; --editor-tooltip: 255 255 255;
   --syntax-key: 130 80 223; --syntax-string: 15 123 66; --syntax-number: 5 80 174; --syntax-boolean: 207 34 46; --syntax-null: 101 109 118; --syntax-comment: 101 109 118; --syntax-operator: 130 80 223;
@@ -63,7 +65,7 @@
   --syntax-key: 86 156 214; --syntax-string: 206 145 120; --syntax-number: 181 206 168; --syntax-boolean: 86 156 214; --syntax-null: 86 156 214; --syntax-comment: 106 153 85; --syntax-operator: 212 212 212;
 }
 html, body, #__nuxt { min-height: 100%; }
-body { @apply bg-canvas text-ink antialiased; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+body { @apply bg-canvas text-ink antialiased; font-family: var(--app-font); }
 button, input, textarea, select { font: inherit; }
 button { @apply transition-colors; }
 .focus-ring { @apply focus:outline-none focus:ring-2 focus:ring-accent/50; }

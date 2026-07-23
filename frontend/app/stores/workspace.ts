@@ -4,7 +4,7 @@ const defaultTabs = (): WorkspaceTab[] => [{ id: 'welcome', title: 'Home', type:
 const homeTabId = 'welcome'
 const pinnedTabIds = new Set(['welcome', 'saved-queries', 'smart-queries', 'settings'])
 const validTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'sql', 'table', 'database', 'connection-home', 'settings', 'stats'])
-const validTableSections = new Set<NonNullable<WorkspaceTab['tableSection']>>(['data', 'structure', 'constraints', 'foreignKeys', 'references', 'triggers', 'indexes', 'ddl', 'diagram'])
+const validTableSections = new Set<NonNullable<WorkspaceTab['tableSection']>>(['data', 'structure', 'constraints', 'foreignKeys', 'references', 'triggers', 'indexes', 'ddl', 'diagram', 'tools'])
 const validDatabaseSections = new Set<NonNullable<WorkspaceTab['databaseSection']>>(['tables', 'diagram'])
 
 type SavedWorkspace = {

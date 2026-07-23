@@ -34,7 +34,7 @@ function submit() {
           <p class="mt-2 text-sm leading-6 text-muted">{{ description }}</p>
           <label class="mt-5 grid gap-1.5 text-sm font-medium text-ink">
             {{ label }}
-            <input ref="input" v-model="name" class="h-11 rounded-lg border border-line bg-canvas px-3 text-ink outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/15" required maxlength="120" @focus="input?.select()" />
+            <input ref="input" v-model="name" class="h-11 rounded-lg border border-line bg-canvas px-3 text-ink outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/15" required maxlength="120" @focus="input?.select()" >
           </label>
         </div>
         <div class="flex flex-col-reverse gap-2 border-t border-line bg-canvas/40 px-5 py-4 sm:flex-row sm:justify-end">

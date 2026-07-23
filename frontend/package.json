@@ -6,6 +6,8 @@
     "dev": "nuxt dev --host 0.0.0.0 --port ${FRONTEND_PORT:-13000}",
     "build": "nuxt build",
     "generate": "nuxt generate",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "typecheck": "nuxt prepare && nuxt typecheck",
     "dev:wails": "nuxt dev --host 127.0.0.1 --port 1420",
     "generate:wails": "nuxt generate && node scripts/copy-wails-assets.mjs",
@@ -30,7 +32,9 @@
     "vue": "^3.5.24"
   },
   "devDependencies": {
+    "@nuxt/eslint": "^1.16.0",
     "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
     "typescript": "^6.0.3",
     "vue-tsc": "^3.3.7"
   }

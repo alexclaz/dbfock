@@ -55,7 +55,7 @@ watch(() => [props.connectionId, props.database], () => { load(); diagram.value 
       <label class="flex w-full max-w-md items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm">
         <Icon name="lucide:search" class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span class="sr-only">{{ t('stats.filter') }}</span>
-        <input v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('database.filterPlaceholder')" />
+        <input v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('database.filterPlaceholder')" >
       </label>
     </div>
 

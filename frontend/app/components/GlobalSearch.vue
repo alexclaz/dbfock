@@ -105,7 +105,7 @@ onMounted(() => nextTick(() => searchInput.value?.focus()))
     <section class="w-full max-w-2xl overflow-hidden rounded-xl border border-line bg-panel shadow-2xl" role="dialog" aria-modal="true" :aria-label="t('search.global')" @keydown="onKeydown">
       <div class="flex items-center gap-3 border-b border-line px-4">
         <Icon name="lucide:search" class="h-5 w-5 shrink-0 text-muted" aria-hidden="true" />
-        <input ref="searchInput" v-model="search" class="h-14 min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('search.placeholder')" :aria-label="t('search.search')" />
+        <input ref="searchInput" v-model="search" class="h-14 min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('search.placeholder')" :aria-label="t('search.search')" >
         <kbd class="rounded border border-line bg-canvas px-1.5 py-0.5 text-[11px] text-muted">ESC</kbd>
       </div>
       <div class="scrollbar max-h-[min(60vh,32rem)] overflow-y-auto p-2">

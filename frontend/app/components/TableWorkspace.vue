@@ -5,7 +5,7 @@ import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits
 type TableSection = 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl' | 'diagram'
 
 const props = defineProps<{ connectionId: string; database: string; table: string; activeSection?: TableSection }>()
-const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-table': [table: string] }>()
+const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-database': [database: string]; 'open-table': [table: string] }>()
 const api = useApi()
 const { t } = useI18n()
 const { error: notifyError } = useToast()
@@ -120,7 +120,7 @@ watch(error, (message) => { if (message) { notifyError(message); error.value = '
 <template>
   <section class="flex h-full min-h-0 flex-col">
     <header class="space-y-3 border-b border-line px-5 py-4 lg:px-7">
-      <div class="flex items-center gap-2"><Icon name="lucide:table-2" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold"><span class="text-sm font-normal text-muted">{{ database }}.</span>{{ table }}</h1></div>
+      <div class="flex items-center gap-2"><Icon name="lucide:table-2" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold"><button type="button" class="text-sm font-normal text-muted hover:text-accent hover:underline focus-ring" :aria-label="database" @click="emit('open-database', database)">{{ database }}.</button>{{ table }}</h1></div>
       <div class="scrollbar max-w-full overflow-x-auto"><div class="flex w-max rounded-md border border-line p-0.5 text-xs">
         <button class="rounded px-2.5 py-1" :class="section === 'data' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('data')">{{ t('table.data') }}</button><button class="rounded px-2.5 py-1" :class="section === 'structure' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('structure')">{{ t('table.structure') }}</button><button class="rounded px-2.5 py-1" :class="section === 'constraints' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('constraints')">{{ t('table.constraints') }}</button><button class="rounded px-2.5 py-1" :class="section === 'foreignKeys' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('foreignKeys')">{{ t('table.foreignKeys') }}</button><button class="rounded px-2.5 py-1" :class="section === 'references' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('references')">{{ t('table.references') }}</button><button class="rounded px-2.5 py-1" :class="section === 'triggers' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('triggers')">{{ t('table.triggers') }}</button><button class="rounded px-2.5 py-1" :class="section === 'indexes' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('indexes')">{{ t('table.indexes') }}</button><button class="rounded px-2.5 py-1" :class="section === 'diagram' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('diagram')">{{ t('table.diagram') }}</button><button class="rounded px-2.5 py-1" :class="section === 'ddl' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('ddl')">DDL</button>
       </div>

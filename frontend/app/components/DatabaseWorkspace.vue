@@ -46,7 +46,7 @@ watch(() => [props.connectionId, props.database], () => { load(); diagram.value 
   <section class="flex h-full min-h-0 flex-col">
     <header class="space-y-3 border-b border-line px-5 py-4 lg:px-7">
       <div class="flex items-center gap-2"><Icon name="lucide:database" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold">{{ database }}</h1></div>
-      <div class="flex rounded-md border border-line p-0.5 text-xs">
+      <div class="inline-flex rounded-md border border-line p-0.5 text-xs">
           <button type="button" class="rounded px-2.5 py-1" :class="section === 'tables' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('tables')">{{ t('database.viewTables') }}</button>
           <button type="button" class="rounded px-2.5 py-1" :class="section === 'diagram' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('diagram')">{{ t('database.viewDiagram') }}</button>
       </div>

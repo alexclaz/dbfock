@@ -3,12 +3,12 @@ import { autocompletion, completionKeymap, startCompletion, type Completion, typ
 import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from '@codemirror/commands'
 import { sql, MySQL } from '@codemirror/lang-sql'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state'
+import { Compartment, EditorState, StateEffect, StateField, Transaction } from '@codemirror/state'
 import { Decoration, drawSelection, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import type { ColumnInfo, Connection, DatabaseInfo, TableInfo } from '~/types/database'
 
-const props = withDefaults(defineProps<{ modelValue: string; connectionId: string; connectionName: string; connections?: Connection[]; executionConnectionId?: string; initialDatabase?: string; running?: boolean; split?: boolean; width?: number | string; queryActions?: boolean; production?: boolean }>(), { connections: () => [] })
+const props = withDefaults(defineProps<{ tabId: string; modelValue: string; connectionId: string; connectionName: string; connections?: Connection[]; executionConnectionId?: string; initialDatabase?: string; running?: boolean; split?: boolean; width?: number | string; queryActions?: boolean; production?: boolean }>(), { connections: () => [] })
 const emit = defineEmits<{ 'update:modelValue': [value: string]; 'update:executionConnectionId': [value?: string]; execute: [sql: string, newResultTab?: boolean]; explain: [sql: string]; improve: [sql: string]; createSmartQuery: [sql: string]; sendToChat: [sql: string]; newQuery: []; saveQuery: [] }>()
 const api = useApi()
 const { t } = useI18n()
@@ -21,6 +21,8 @@ const databases = ref<DatabaseInfo[]>([])
 const tablesByDatabase = new Map<string, TableInfo[]>()
 const columnsByTable = new Map<string, ColumnInfo[]>()
 let view: EditorView | undefined
+const editorStates = new Map<string, EditorState>()
+let currentTabId = ''
 let syncing = false
 let searchControls: HTMLDivElement | undefined
 const selectedSQL = ref('')
@@ -84,6 +86,11 @@ function tableReferences(sqlText: string) {
   }
   return references
 }
+function tableCompletion(table: TableInfo, database: string): Completion {
+  const alias = table.name.split('_').filter(Boolean).map((part) => part[0]).join('').toLowerCase()
+  const insert = alias ? `${table.name} ${alias}` : table.name
+  return { label: insert, type: 'class', detail: `${database} table`, apply: insert }
+}
 async function completionSource(context: CompletionContext) {
   const word = context.matchBefore(/[A-Za-z0-9_$]*/)
   if (!context.explicit && !word?.text) return null
@@ -100,19 +107,19 @@ async function completionSource(context: CompletionContext) {
   const statementText = text.slice(blockStart, blockEnd)
   const options: Completion[] = keywords.map((label) => ({ label, type: 'keyword', boost: 2 }))
   await loadDatabases()
-  options.push(...databases.value.map((database) => ({ label: database.name, type: 'namespace', detail: 'database', apply: `\`${database.name}\`` })))
+  options.push(...databases.value.map((database) => ({ label: database.name, type: 'namespace', detail: 'database', apply: database.name })))
   const qualifier = before.match(/([A-Za-z_][\w$]*)\.$/)?.[1]
   if (qualifier) {
     const reference = tableReferences(statementText).find((item) => item.alias === qualifier || item.table === qualifier)
     if (reference) {
       try { options.push(...(await getColumns(reference.database, reference.table)).map((column) => ({ label: column.name, type: 'property', detail: column.columnType }))) } catch { /* leave the normal suggestions available */ }
     } else {
-      try { options.push(...(await getTables(qualifier)).map((table) => ({ label: table.name, type: 'class', detail: `${qualifier} table`, apply: `\`${table.name}\`` }))) } catch { /* leave the normal suggestions available */ }
+      try { options.push(...(await getTables(qualifier)).map((table) => tableCompletion(table, qualifier))) } catch { /* leave the normal suggestions available */ }
     }
   } else {
     const database = props.initialDatabase || databases.value[0]?.name
     if (database) {
-      try { options.push(...(await getTables(database)).map((table) => ({ label: table.name, type: 'class', detail: `${database} table`, apply: `\`${table.name}\`` }))) } catch { /* leave the normal suggestions available */ }
+      try { options.push(...(await getTables(database)).map((table) => tableCompletion(table, database))) } catch { /* leave the normal suggestions available */ }
     }
     for (const reference of tableReferences(statementText)) {
       try { options.push(...(await getColumns(reference.database, reference.table)).map((column) => ({ label: `${reference.alias}.${column.name}`, type: 'property', detail: `${reference.table} · ${column.columnType}` }))) } catch { /* leave the normal suggestions available */ }
@@ -400,17 +407,33 @@ function closeContextMenuOnPointerDown(event: PointerEvent) {
 }
 function closeContextMenuOnKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') { closeContextMenu(); connectionMenuOpen.value = false } }
 
-watch(() => props.modelValue, (value) => { if (!syncing && view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } }) })
+function createEditorState(doc: string) {
+  return EditorState.create({ doc, extensions: [lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
+}
+
+watch(() => props.modelValue, (value) => { if (!syncing && view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) }) })
 watch(() => props.connectionId, () => { databases.value = []; tablesByDatabase.clear(); columnsByTable.clear(); metadataState.value = 'idle'; loadDatabases() })
-watch(isDarkTheme, (dark) => { view?.dispatch({ effects: themeCompartment.reconfigure(createEditorTheme(dark)) }) })
+watch(() => props.tabId, (tabId) => {
+  if (!view || tabId === currentTabId) return
+  editorStates.set(currentTabId, view.state)
+  view.setState(editorStates.get(tabId) || createEditorState(props.modelValue))
+  currentTabId = tabId
+  updateSelectedSQL()
+  closeContextMenu()
+}, { flush: 'sync' })
+watch(isDarkTheme, (dark) => {
+  for (const [tabId, state] of editorStates) editorStates.set(tabId, state.update({ effects: themeCompartment.reconfigure(createEditorTheme(dark)) }).state)
+  view?.dispatch({ effects: themeCompartment.reconfigure(createEditorTheme(dark)) })
+})
 onMounted(() => {
-  view = new EditorView({ state: EditorState.create({ doc: props.modelValue, extensions: [lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] }), parent: editorHost.value! })
+  currentTabId = props.tabId
+  view = new EditorView({ state: createEditorState(props.modelValue), parent: editorHost.value! })
   mountSearchControls()
   document.addEventListener('pointerdown', closeContextMenuOnPointerDown)
   document.addEventListener('keydown', closeContextMenuOnKeyDown)
   loadDatabases()
 })
-onBeforeUnmount(() => { view?.destroy(); searchControls?.remove(); document.removeEventListener('pointerdown', closeContextMenuOnPointerDown); document.removeEventListener('keydown', closeContextMenuOnKeyDown) })
+onBeforeUnmount(() => { editorStates.clear(); view?.destroy(); searchControls?.remove(); document.removeEventListener('pointerdown', closeContextMenuOnPointerDown); document.removeEventListener('keydown', closeContextMenuOnKeyDown) })
 </script>
 
 <template><section class="flex min-h-0 flex-col bg-[rgb(var(--editor-panel))] text-[rgb(var(--editor-ink))]" :class="split ? 'h-full shrink-0 border-r border-line' : 'h-[46%] min-h-64 w-full shrink-0 border-b border-line'" :style="split ? { width: typeof width === 'number' ? `${width}%` : width ?? '50%' } : undefined"><div class="flex h-10 items-center justify-between border-b border-[rgb(var(--editor-line))] px-3"><div class="flex min-w-0 items-center gap-2 text-xs text-[rgb(var(--editor-muted))]"><div v-if="connections.length" data-connection-menu class="relative min-w-0"><button type="button" class="flex max-w-52 items-center gap-1.5 rounded border border-transparent bg-transparent px-1.5 py-1 text-xs text-[rgb(var(--editor-ink))] hover:border-[rgb(var(--editor-line))] focus:border-accent focus:outline-none" :aria-label="t('editor.connectionLabel')" :aria-expanded="connectionMenuOpen" aria-haspopup="listbox" @click="connectionMenuOpen = !connectionMenuOpen"><span class="truncate">{{ selectedExecutionConnection?.name || connectionName }}</span><Icon name="lucide:chevron-down" class="h-3.5 w-3.5 shrink-0 text-[rgb(var(--editor-muted))] transition-transform" :class="connectionMenuOpen ? 'rotate-180' : ''" aria-hidden="true" /></button><div v-if="connectionMenuOpen" class="absolute left-0 top-full z-30 mt-1 min-w-52 overflow-hidden rounded-md border border-[rgb(var(--editor-line))] bg-[rgb(var(--editor-panel))] p-1 shadow-lg" role="listbox"><button v-for="connection in connections" :key="connection.id" type="button" class="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" :class="connection.id === selectedExecutionConnectionId ? 'font-medium text-accent' : ''" role="option" :aria-selected="connection.id === selectedExecutionConnectionId" @click="updateExecutionConnection(connection.id)"><span class="truncate">{{ connection.name }}</span><Icon v-if="connection.id === selectedExecutionConnectionId" name="lucide:check" class="h-3.5 w-3.5" aria-hidden="true" /></button></div></div><span v-else>{{ connectionName }}</span><span v-if="production" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('transaction.production') }}</span><span>· {{ metadataState === 'ready' ? t('editor.schemaReady') : t('editor.loadingSchema') }}</span></div><div class="flex gap-2"><template v-if="queryActions !== false"><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('newQuery')">{{ t('editor.newQuery') }}</button><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('saveQuery')">{{ t('editor.saveQuery') }}</button></template><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="format">{{ t('editor.format') }}</button><button class="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50" :disabled="running" @click="() => runCurrentStatement()">{{ running ? t('editor.running') : t('editor.run') }}</button></div></div><div ref="editorHost" class="min-h-0 flex-1" /><div v-if="contextMenu" data-sql-context-menu class="fixed z-50 min-w-44 overflow-hidden rounded-md border border-line bg-panel py-1 shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @contextmenu.prevent><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('explain')">{{ t('editor.explainQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="createSmartQueryFromSelection">{{ t('editor.createSmartQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('improve')">{{ t('editor.improveQuery') }}</button><div class="my-1 border-t border-line" /><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="copySelection">{{ copied ? t('editor.copied') : t('editor.copy') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas" @click="pasteFromClipboard">{{ t('editor.paste') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="pasteSelectionToChat">{{ t('editor.pasteQueryToChat') }}</button></div></section></template>

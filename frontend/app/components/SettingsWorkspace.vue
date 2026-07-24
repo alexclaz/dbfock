@@ -47,6 +47,11 @@ const shortcuts = [
   { label: 'settings.shortcutRunBlock', keys: '⌘↵ / Ctrl+Enter' },
   { label: 'settings.shortcutRunNewResult', keys: '⌘\\ / Ctrl+\\' },
   { label: 'settings.shortcutCommentBlock', keys: '⌘/ / Ctrl+/' },
+  { label: 'settings.shortcutReplace', keys: '⌘H / Ctrl+H' },
+  { label: 'settings.shortcutSelectNextOccurrence', keys: '⌘D / Ctrl+D' },
+  { label: 'settings.shortcutSelectAllOccurrences', keys: '⌘⇧L / Ctrl+Shift+L' },
+  { label: 'settings.shortcutAddCursor', keys: '⌘⌥↑↓ / Ctrl+Alt+↑↓' },
+  { label: 'settings.shortcutAddCursorMouse', keys: '⌥+Clique / Alt+Click' },
 ] as const
 const themeOptions: { value: ThemePreference; label: string; description: string; preview: string[] }[] = [
   { value: 'dbfock-dark', label: 'theme.dbfockDark', description: 'theme.dbfockDarkDescription', preview: ['#111926', '#172235', '#ff7849'] },

@@ -3,7 +3,7 @@ import { autocompletion, completionKeymap, startCompletion, type Completion, typ
 import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from '@codemirror/commands'
 import { sql, MySQL } from '@codemirror/lang-sql'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { Compartment, EditorState, StateEffect, StateField, Transaction } from '@codemirror/state'
+import { Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from '@codemirror/state'
 import { Decoration, drawSelection, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import type { ColumnInfo, Connection, DatabaseInfo, TableInfo } from '~/types/database'
@@ -16,6 +16,7 @@ type ThemePreference = 'dbfock-light' | 'dbfock-dark' | 'github-light' | 'github
 const themePreference = useState<ThemePreference>('theme-preference', () => 'vscode-dark')
 const isDarkTheme = computed(() => !['dbfock-light', 'github-light', 'vscode-light'].includes(themePreference.value))
 const editorHost = ref<HTMLElement>()
+const editorShell = ref<HTMLElement>()
 const metadataState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const databases = ref<DatabaseInfo[]>([])
 const tablesByDatabase = new Map<string, TableInfo[]>()
@@ -24,6 +25,7 @@ let view: EditorView | undefined
 const editorStates = new Map<string, EditorState>()
 let currentTabId = ''
 let syncing = false
+let nextSearchMatchFrom: number | undefined
 let searchControls: HTMLDivElement | undefined
 const selectedSQL = ref('')
 const contextMenu = ref<{ x: number; y: number }>()
@@ -31,6 +33,8 @@ const copied = ref(false)
 const searchQuery = ref('')
 const searchMatchIndex = ref(-1)
 const searchInput = ref<HTMLInputElement>()
+const replaceInput = ref<HTMLInputElement>()
+const replaceQuery = ref('')
 const themeCompartment = new Compartment()
 const searchHighlightMark = Decoration.mark({ class: 'cm-searchMatch' })
 const setSearchHighlights = StateEffect.define<DecorationSet>()
@@ -295,7 +299,33 @@ function updateSearch() {
   updateSearchHighlights()
   if (searchQuery.value) selectSearchMatch(0)
 }
+function selectSearchMatchAtOrAfter(position: number) {
+  const matches = searchMatches()
+  if (!matches.length) { searchMatchIndex.value = -1; return }
+  const index = matches.findIndex((from) => from >= position)
+  selectSearchMatch(index < 0 ? 0 : index)
+}
+function showSearchControls() { searchControls?.classList.remove('hidden') }
+function hideSearchControls() { searchControls?.classList.add('hidden') }
+function replaceCurrentMatch() {
+  const matches = searchMatches()
+  if (!view || !searchQuery.value || !matches.length) return false
+  const index = searchMatchIndex.value < 0 ? 0 : searchMatchIndex.value % matches.length
+  const from = matches[index]!
+  nextSearchMatchFrom = from + replaceQuery.value.length
+  view.dispatch({ changes: { from, to: from + searchQuery.value.length, insert: replaceQuery.value } })
+  return true
+}
+function replaceAllMatches() {
+  const matches = searchMatches()
+  if (!view || !searchQuery.value || !matches.length) return false
+  view.dispatch({ changes: matches.map((from) => ({ from, to: from + searchQuery.value.length, insert: replaceQuery.value })) })
+  updateSearch()
+  updateSearchControls()
+  return true
+}
 function focusSearch() {
+  showSearchControls()
   if (view) {
     const selection = view.state.selection.main
     const selectedText = selection.empty ? '' : view.state.doc.sliceString(selection.from, selection.to)
@@ -307,6 +337,10 @@ function focusSearch() {
     }
   }
   nextTick(() => searchInput.value?.focus())
+}
+function focusReplace() {
+  focusSearch()
+  nextTick(() => replaceInput.value?.focus())
 }
 function clearSearch() {
   searchQuery.value = ''
@@ -323,15 +357,22 @@ function updateSearchControls() {
   const count = searchControls.querySelector('[data-search-count]')
   const previous = searchControls.querySelector<HTMLButtonElement>('[data-search-previous]')
   const next = searchControls.querySelector<HTMLButtonElement>('[data-search-next]')
+  const replaceCurrent = searchControls.querySelector<HTMLButtonElement>('[data-search-replace-current]')
+  const replaceAll = searchControls.querySelector<HTMLButtonElement>('[data-search-replace-all]')
   if (count) count.textContent = searchMatchLabel.value
   if (previous) previous.disabled = !searchQuery.value
   if (next) next.disabled = !searchQuery.value
+  if (replaceCurrent) replaceCurrent.disabled = !searchQuery.value || !searchMatches().length
+  if (replaceAll) replaceAll.disabled = !searchQuery.value || !searchMatches().length
 }
 function mountSearchControls() {
-  const actions = editorHost.value?.previousElementSibling?.lastElementChild
-  if (!(actions instanceof HTMLElement)) return
+  if (!editorShell.value) return
   const controls = document.createElement('div')
-  controls.className = 'flex h-7 items-center rounded border border-[rgb(var(--editor-line))] bg-[rgb(var(--editor-canvas))] text-xs focus-within:border-accent'
+  controls.className = 'absolute right-3 top-3 z-20 hidden max-w-[calc(100%-1.5rem)] overflow-hidden rounded border border-[rgb(var(--editor-line))] bg-[rgb(var(--editor-canvas))] text-xs shadow-lg focus-within:border-accent'
+  const searchRow = document.createElement('div')
+  searchRow.className = 'flex h-7 items-center'
+  const replaceRow = document.createElement('div')
+  replaceRow.className = 'flex h-7 items-center border-t border-[rgb(var(--editor-line))]'
   const icon = document.createElement('span')
   icon.className = 'pl-2 text-[rgb(var(--editor-muted))]'
   icon.textContent = '⌕'
@@ -355,17 +396,56 @@ function mountSearchControls() {
   next.className = 'px-1.5 text-[rgb(var(--editor-muted))] hover:text-[rgb(var(--editor-ink))] disabled:opacity-40'
   next.textContent = '↓'
   next.title = t('editor.nextMatch')
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'px-2 text-[rgb(var(--editor-muted))] hover:text-[rgb(var(--editor-ink))]'
+  close.textContent = '×'
+  close.title = t('common.close')
+  close.setAttribute('aria-label', t('common.close'))
+  const replaceIcon = document.createElement('span')
+  replaceIcon.className = 'pl-2 text-[rgb(var(--editor-muted))]'
+  replaceIcon.textContent = '↳'
+  const replacement = document.createElement('input')
+  replacement.type = 'text'
+  replacement.placeholder = t('editor.replace')
+  replacement.setAttribute('aria-label', t('editor.replace'))
+  replacement.className = 'w-20 bg-transparent px-1.5 text-xs text-[rgb(var(--editor-ink))] outline-none placeholder:text-[rgb(var(--editor-muted))] sm:w-28'
+  const replaceCurrent = document.createElement('button')
+  replaceCurrent.type = 'button'
+  replaceCurrent.dataset.searchReplaceCurrent = ''
+  replaceCurrent.className = 'px-1 text-[rgb(var(--editor-muted))] hover:text-[rgb(var(--editor-ink))] disabled:opacity-40'
+  replaceCurrent.textContent = '↳'
+  replaceCurrent.title = t('editor.replaceCurrent')
+  replaceCurrent.setAttribute('aria-label', t('editor.replaceCurrent'))
+  const replaceAll = document.createElement('button')
+  replaceAll.type = 'button'
+  replaceAll.dataset.searchReplaceAll = ''
+  replaceAll.className = 'px-1.5 text-[rgb(var(--editor-muted))] hover:text-[rgb(var(--editor-ink))] disabled:opacity-40'
+  replaceAll.textContent = '↳×'
+  replaceAll.title = t('editor.replaceAll')
+  replaceAll.setAttribute('aria-label', t('editor.replaceAll'))
   input.addEventListener('input', () => { searchQuery.value = input.value; updateSearch(); updateSearchControls() })
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') { event.preventDefault(); selectSearchMatch(searchMatchIndex.value + (event.shiftKey ? -1 : 1)); updateSearchControls() }
-    if (event.key === 'Escape') { event.preventDefault(); input.value = ''; clearSearch(); updateSearchControls() }
+    if (event.key === 'Escape') { event.preventDefault(); input.value = ''; clearSearch(); hideSearchControls() }
+  })
+  replacement.addEventListener('input', () => { replaceQuery.value = replacement.value })
+  replacement.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); (event.shiftKey ? replaceAllMatches : replaceCurrentMatch)() }
+    if (event.key === 'Escape') { event.preventDefault(); hideSearchControls(); view?.focus() }
   })
   previous.addEventListener('click', () => { selectSearchMatch(searchMatchIndex.value - 1); updateSearchControls() })
   next.addEventListener('click', () => { selectSearchMatch(searchMatchIndex.value + 1); updateSearchControls() })
-  controls.append(icon, input, count, previous, next)
-  actions.prepend(controls)
+  close.addEventListener('click', () => { clearSearch(); hideSearchControls() })
+  replaceCurrent.addEventListener('click', replaceCurrentMatch)
+  replaceAll.addEventListener('click', replaceAllMatches)
+  searchRow.append(icon, input, count, previous, next, close)
+  replaceRow.append(replaceIcon, replacement, replaceCurrent, replaceAll)
+  controls.append(searchRow, replaceRow)
+  editorShell.value.append(controls)
   searchControls = controls
   searchInput.value = input
+  replaceInput.value = replacement
   updateSearchControls()
 }
 
@@ -407,8 +487,70 @@ function closeContextMenuOnPointerDown(event: PointerEvent) {
 }
 function closeContextMenuOnKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') { closeContextMenu(); connectionMenuOpen.value = false } }
 
+function selectedOccurrence(view: EditorView) {
+  const selection = view.state.selection.main
+  if (!selection.empty) return { from: selection.from, to: selection.to, text: view.state.doc.sliceString(selection.from, selection.to) }
+
+  const source = view.state.doc.toString()
+  let from = selection.head
+  let to = selection.head
+  while (from > 0 && /[A-Za-z0-9_$]/.test(source[from - 1]!)) from--
+  while (to < source.length && /[A-Za-z0-9_$]/.test(source[to]!)) to++
+  return from === to ? undefined : { from, to, text: source.slice(from, to) }
+}
+
+function isIdentifier(text: string) { return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(text) }
+function isWholeIdentifierMatch(source: string, from: number, text: string) {
+  if (!isIdentifier(text)) return true
+  return !/[A-Za-z0-9_$]/.test(source[from - 1] || '') && !/[A-Za-z0-9_$]/.test(source[from + text.length] || '')
+}
+
+function occurrenceRanges(source: string, text: string) {
+  const ranges: { from: number; to: number }[] = []
+  let from = 0
+  while (from < source.length) {
+    const match = source.indexOf(text, from)
+    if (match < 0) break
+    if (isWholeIdentifierMatch(source, match, text)) ranges.push({ from: match, to: match + text.length })
+    from = match + Math.max(text.length, 1)
+  }
+  return ranges
+}
+
+function selectNextOccurrence(view: EditorView) {
+  const selectionWasEmpty = view.state.selection.main.empty
+  const occurrence = selectedOccurrence(view)
+  if (!occurrence?.text) return false
+  if (selectionWasEmpty) {
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.range(occurrence.from, occurrence.to)], 0), scrollIntoView: true })
+    return true
+  }
+
+  const source = view.state.doc.toString()
+  const currentRanges = view.state.selection.ranges
+  const isSelected = (from: number) => currentRanges.some((range) => range.from === from && range.to === from + occurrence.text.length)
+  const matches = occurrenceRanges(source, occurrence.text).filter((range) => !isSelected(range.from))
+  if (!matches.length) return true
+
+  const next = matches.find((range) => range.from >= occurrence.to) || matches[0]!
+  const ranges = [...currentRanges, EditorSelection.range(next.from, next.to)]
+  view.dispatch({ selection: EditorSelection.create(ranges, ranges.length - 1), scrollIntoView: true })
+  return true
+}
+
+function selectAllOccurrences(view: EditorView) {
+  const occurrence = selectedOccurrence(view)
+  if (!occurrence?.text) return false
+
+  const ranges = occurrenceRanges(view.state.doc.toString(), occurrence.text)
+  if (!ranges.length) return false
+  const mainIndex = ranges.findIndex((range) => range.from === occurrence.from && range.to === occurrence.to)
+  view.dispatch({ selection: EditorSelection.create(ranges.map((range) => EditorSelection.range(range.from, range.to)), Math.max(mainIndex, 0)), scrollIntoView: true })
+  return true
+}
+
 function createEditorState(doc: string) {
-  return EditorState.create({ doc, extensions: [lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
+  return EditorState.create({ doc, extensions: [EditorState.allowMultipleSelections.of(true), EditorView.clickAddsSelectionRange.of((event) => event.altKey), lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, { key: 'Mod-Shift-l', run: selectAllOccurrences }, { key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-h', run: () => { focusReplace(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { const preferredSearchMatchFrom = nextSearchMatchFrom; nextSearchMatchFrom = undefined; syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { if (preferredSearchMatchFrom === undefined) updateSearch(); else { updateSearchHighlights(); selectSearchMatchAtOrAfter(preferredSearchMatchFrom) }; updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
 }
 
 watch(() => props.modelValue, (value) => { if (!syncing && view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) }) })
@@ -436,4 +578,4 @@ onMounted(() => {
 onBeforeUnmount(() => { editorStates.clear(); view?.destroy(); searchControls?.remove(); document.removeEventListener('pointerdown', closeContextMenuOnPointerDown); document.removeEventListener('keydown', closeContextMenuOnKeyDown) })
 </script>
 
-<template><section class="flex min-h-0 flex-col bg-[rgb(var(--editor-panel))] text-[rgb(var(--editor-ink))]" :class="split ? 'h-full shrink-0 border-r border-line' : 'h-[46%] min-h-64 w-full shrink-0 border-b border-line'" :style="split ? { width: typeof width === 'number' ? `${width}%` : width ?? '50%' } : undefined"><div class="flex h-10 items-center justify-between border-b border-[rgb(var(--editor-line))] px-3"><div class="flex min-w-0 items-center gap-2 text-xs text-[rgb(var(--editor-muted))]"><div v-if="connections.length" data-connection-menu class="relative min-w-0"><button type="button" class="flex max-w-52 items-center gap-1.5 rounded border border-transparent bg-transparent px-1.5 py-1 text-xs text-[rgb(var(--editor-ink))] hover:border-[rgb(var(--editor-line))] focus:border-accent focus:outline-none" :aria-label="t('editor.connectionLabel')" :aria-expanded="connectionMenuOpen" aria-haspopup="listbox" @click="connectionMenuOpen = !connectionMenuOpen"><span class="truncate">{{ selectedExecutionConnection?.name || connectionName }}</span><Icon name="lucide:chevron-down" class="h-3.5 w-3.5 shrink-0 text-[rgb(var(--editor-muted))] transition-transform" :class="connectionMenuOpen ? 'rotate-180' : ''" aria-hidden="true" /></button><div v-if="connectionMenuOpen" class="absolute left-0 top-full z-30 mt-1 min-w-52 overflow-hidden rounded-md border border-[rgb(var(--editor-line))] bg-[rgb(var(--editor-panel))] p-1 shadow-lg" role="listbox"><button v-for="connection in connections" :key="connection.id" type="button" class="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" :class="connection.id === selectedExecutionConnectionId ? 'font-medium text-accent' : ''" role="option" :aria-selected="connection.id === selectedExecutionConnectionId" @click="updateExecutionConnection(connection.id)"><span class="truncate">{{ connection.name }}</span><Icon v-if="connection.id === selectedExecutionConnectionId" name="lucide:check" class="h-3.5 w-3.5" aria-hidden="true" /></button></div></div><span v-else>{{ connectionName }}</span><span v-if="production" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('transaction.production') }}</span><span>· {{ metadataState === 'ready' ? t('editor.schemaReady') : t('editor.loadingSchema') }}</span></div><div class="flex gap-2"><template v-if="queryActions !== false"><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('newQuery')">{{ t('editor.newQuery') }}</button><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('saveQuery')">{{ t('editor.saveQuery') }}</button></template><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="format">{{ t('editor.format') }}</button><button class="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50" :disabled="running" @click="() => runCurrentStatement()">{{ running ? t('editor.running') : t('editor.run') }}</button></div></div><div ref="editorHost" class="min-h-0 flex-1" /><div v-if="contextMenu" data-sql-context-menu class="fixed z-50 min-w-44 overflow-hidden rounded-md border border-line bg-panel py-1 shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @contextmenu.prevent><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('explain')">{{ t('editor.explainQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="createSmartQueryFromSelection">{{ t('editor.createSmartQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('improve')">{{ t('editor.improveQuery') }}</button><div class="my-1 border-t border-line" /><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="copySelection">{{ copied ? t('editor.copied') : t('editor.copy') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas" @click="pasteFromClipboard">{{ t('editor.paste') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="pasteSelectionToChat">{{ t('editor.pasteQueryToChat') }}</button></div></section></template>
+<template><section class="flex min-h-0 flex-col bg-[rgb(var(--editor-panel))] text-[rgb(var(--editor-ink))]" :class="split ? 'h-full shrink-0 border-r border-line' : 'h-[46%] min-h-64 w-full shrink-0 border-b border-line'" :style="split ? { width: typeof width === 'number' ? `${width}%` : width ?? '50%' } : undefined"><div class="flex h-10 items-center justify-between border-b border-[rgb(var(--editor-line))] px-3"><div class="flex min-w-0 items-center gap-2 text-xs text-[rgb(var(--editor-muted))]"><div v-if="connections.length" data-connection-menu class="relative min-w-0"><button type="button" class="flex max-w-52 items-center gap-1.5 rounded border border-transparent bg-transparent px-1.5 py-1 text-xs text-[rgb(var(--editor-ink))] hover:border-[rgb(var(--editor-line))] focus:border-accent focus:outline-none" :aria-label="t('editor.connectionLabel')" :aria-expanded="connectionMenuOpen" aria-haspopup="listbox" @click="connectionMenuOpen = !connectionMenuOpen"><span class="truncate">{{ selectedExecutionConnection?.name || connectionName }}</span><Icon name="lucide:chevron-down" class="h-3.5 w-3.5 shrink-0 text-[rgb(var(--editor-muted))] transition-transform" :class="connectionMenuOpen ? 'rotate-180' : ''" aria-hidden="true" /></button><div v-if="connectionMenuOpen" class="absolute left-0 top-full z-30 mt-1 min-w-52 overflow-hidden rounded-md border border-[rgb(var(--editor-line))] bg-[rgb(var(--editor-panel))] p-1 shadow-lg" role="listbox"><button v-for="connection in connections" :key="connection.id" type="button" class="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" :class="connection.id === selectedExecutionConnectionId ? 'font-medium text-accent' : ''" role="option" :aria-selected="connection.id === selectedExecutionConnectionId" @click="updateExecutionConnection(connection.id)"><span class="truncate">{{ connection.name }}</span><Icon v-if="connection.id === selectedExecutionConnectionId" name="lucide:check" class="h-3.5 w-3.5" aria-hidden="true" /></button></div></div><span v-else>{{ connectionName }}</span><span v-if="production" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('transaction.production') }}</span><span>· {{ metadataState === 'ready' ? t('editor.schemaReady') : t('editor.loadingSchema') }}</span></div><div class="flex gap-2"><template v-if="queryActions !== false"><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('newQuery')">{{ t('editor.newQuery') }}</button><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('saveQuery')">{{ t('editor.saveQuery') }}</button></template><button type="button" class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" :aria-label="t('editor.search')" :title="t('editor.search')" @click="focusSearch"><Icon name="lucide:search" class="h-3.5 w-3.5" aria-hidden="true" /></button><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="format">{{ t('editor.format') }}</button><button class="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50" :disabled="running" @click="() => runCurrentStatement()">{{ running ? t('editor.running') : t('editor.run') }}</button></div></div><div ref="editorShell" class="relative min-h-0 flex-1"><div ref="editorHost" class="h-full min-h-0" /></div><div v-if="contextMenu" data-sql-context-menu class="fixed z-50 min-w-44 overflow-hidden rounded-md border border-line bg-panel py-1 shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @contextmenu.prevent><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('explain')">{{ t('editor.explainQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="createSmartQueryFromSelection">{{ t('editor.createSmartQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('improve')">{{ t('editor.improveQuery') }}</button><div class="my-1 border-t border-line" /><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="copySelection">{{ copied ? t('editor.copied') : t('editor.copy') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas" @click="pasteFromClipboard">{{ t('editor.paste') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="pasteSelectionToChat">{{ t('editor.pasteQueryToChat') }}</button></div></section></template>

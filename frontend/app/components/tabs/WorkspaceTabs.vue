@@ -7,9 +7,9 @@ const emit = defineEmits<{ select: [id: string]; close: [id: string]; closeRight
 const { t } = useI18n()
 const contextMenu = ref<{ tab: WorkspaceTab; x: number; y: number }>()
 
-function title(tab: WorkspaceTab) { return tab.type === 'welcome' ? t('search.home') : tab.type === 'saved' ? t('savedQueries.title') : tab.type === 'smart' ? t('smartQueries.title') : tab.type === 'settings' ? t('settings.title') : tab.title }
+function title(tab: WorkspaceTab) { return tab.type === 'welcome' ? t('search.home') : tab.type === 'saved' ? t('savedQueries.title') : tab.type === 'smart' ? t('smartQueries.title') : tab.type === 'history' ? t('query.historyTitle') : tab.type === 'settings' ? t('settings.title') : tab.title }
 function isHome(tab: WorkspaceTab) { return tab.id === 'welcome' }
-function isPinned(tab: WorkspaceTab) { return tab.id === 'welcome' || tab.id === 'saved-queries' || tab.id === 'settings' }
+function isPinned(tab: WorkspaceTab) { return tab.id === 'welcome' || tab.id === 'saved-queries' || tab.id === 'smart-queries' || tab.id === 'query-history' || tab.id === 'settings' }
 function aiStatusLabel(tab: WorkspaceTab) { return tab.aiStatus === 'running' ? t('tabs.aiRunning') : t('tabs.aiComplete') }
 function startDrag(event: DragEvent, tab: WorkspaceTab) {
   if (isPinned(tab) || !event.dataTransfer) return

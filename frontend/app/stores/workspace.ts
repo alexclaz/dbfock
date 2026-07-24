@@ -1,9 +1,9 @@
-import type { AIAgentChat, Connection, SavedQuery, SmartQuery, WorkspaceTab } from '~/types/database'
+import type { AIAgentChat, Connection, QueryTabHistory, SavedQuery, SmartQuery, WorkspaceTab } from '~/types/database'
 
 const defaultTabs = (): WorkspaceTab[] => [{ id: 'welcome', title: 'Home', type: 'welcome' }]
 const homeTabId = 'welcome'
-const pinnedTabIds = new Set(['welcome', 'saved-queries', 'smart-queries', 'settings'])
-const validTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'sql', 'table', 'database', 'connection-home', 'settings', 'stats'])
+const pinnedTabIds = new Set(['welcome', 'saved-queries', 'smart-queries', 'query-history', 'settings'])
+const validTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'history', 'sql', 'table', 'database', 'connection-home', 'settings', 'stats'])
 const validTableSections = new Set<NonNullable<WorkspaceTab['tableSection']>>(['data', 'structure', 'constraints', 'foreignKeys', 'references', 'triggers', 'indexes', 'ddl', 'diagram', 'tools'])
 const validDatabaseSections = new Set<NonNullable<WorkspaceTab['databaseSection']>>(['tables', 'diagram'])
 
@@ -15,6 +15,8 @@ type SavedWorkspace = {
   activeTabIdsByConnection?: Record<string, string>
   savedQueries?: SavedQuery[]
   smartQueries?: SmartQuery[]
+  queryTabHistory?: QueryTabHistory[]
+  queryTabSequence?: number
 }
 
 function parseActiveTabIdsByConnection(value: unknown): Record<string, string> {
@@ -46,6 +48,7 @@ function savedTabs(value: unknown): WorkspaceTab[] | undefined {
       && (candidate.database === undefined || typeof candidate.database === 'string')
       && (candidate.table === undefined || typeof candidate.table === 'string')
       && (candidate.sql === undefined || typeof candidate.sql === 'string')
+      && (candidate.queryNumber === undefined || (typeof candidate.queryNumber === 'number' && Number.isInteger(candidate.queryNumber) && candidate.queryNumber > 0))
       && (candidate.tableSection === undefined || validTableSections.has(candidate.tableSection))
       && (candidate.databaseSection === undefined || validDatabaseSections.has(candidate.databaseSection))
       && (candidate.settingsSection === undefined || candidate.settingsSection === 'appearance' || candidate.settingsSection === 'shortcuts' || candidate.settingsSection === 'connections' || candidate.settingsSection === 'ai' || candidate.settingsSection === 'audit' || candidate.settingsSection === 'backup')
@@ -88,6 +91,22 @@ function parseSmartQueries(value: unknown): SmartQuery[] {
   })
 }
 
+function parseQueryTabHistory(value: unknown): QueryTabHistory[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((tab): tab is QueryTabHistory => {
+    if (!tab || typeof tab !== 'object') return false
+    const candidate = tab as QueryTabHistory
+    return typeof candidate.id === 'string'
+      && typeof candidate.title === 'string'
+      && typeof candidate.connectionId === 'string'
+      && (candidate.executionConnectionId === undefined || typeof candidate.executionConnectionId === 'string')
+      && typeof candidate.sql === 'string'
+      && typeof candidate.closedAt === 'string'
+      && (candidate.queryNumber === undefined || (typeof candidate.queryNumber === 'number' && Number.isInteger(candidate.queryNumber) && candidate.queryNumber > 0))
+      && (candidate.savedQueryId === undefined || typeof candidate.savedQueryId === 'string')
+  })
+}
+
 export const useWorkspaceStore = defineStore('workspace', () => {
   const connections = ref<Connection[]>([])
   const activeConnectionId = ref<string>()
@@ -96,6 +115,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeTabIdsByConnection = ref<Record<string, string>>({})
   const savedQueries = ref<SavedQuery[]>([])
   const smartQueries = ref<SmartQuery[]>([])
+  const queryTabHistory = ref<QueryTabHistory[]>([])
+  const queryTabSequence = ref(0)
   const activeConnection = computed(() => connections.value.find((item) => item.id === activeConnectionId.value))
   const api = useApi()
   const storageKey = 'dbfock.workspace-tabs'
@@ -120,6 +141,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       else tabs.value = orderedTabs([...tabs.value, ...defaultTabs()])
       savedQueries.value = parseSavedQueries(saved.savedQueries)
       smartQueries.value = parseSmartQueries(saved.smartQueries)
+      queryTabHistory.value = parseQueryTabHistory(saved.queryTabHistory)
+      const largestTabNumber = Math.max(0, ...tabs.value.map((tab) => tab.queryNumber || 0), ...queryTabHistory.value.map((tab) => tab.queryNumber || 0))
+      queryTabSequence.value = typeof saved.queryTabSequence === 'number' && Number.isInteger(saved.queryTabSequence) && saved.queryTabSequence >= largestTabNumber ? saved.queryTabSequence : largestTabNumber
       activeTabIdsByConnection.value = parseActiveTabIdsByConnection(saved.activeTabIdsByConnection)
       if (saved.activeTabId && tabs.value.some((tab) => tab.id === saved.activeTabId)) activeTabId.value = saved.activeTabId
       if (typeof saved.activeConnectionId === 'string') activeConnectionId.value = saved.activeConnectionId
@@ -130,7 +154,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function persistWorkspace() {
     if (import.meta.client && restored.value) {
       localStorage.setItem(storageKey, JSON.stringify({
-        version: 2,
+        version: 3,
         // The job ID is persisted so an in-flight backend job can be recovered after a reload.
         tabs: tabs.value.map(({ aiStatus: _aiStatus, ...tab }) => tab),
         activeTabId: activeTabId.value,
@@ -138,11 +162,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         activeTabIdsByConnection: activeTabIdsByConnection.value,
         savedQueries: savedQueries.value,
         smartQueries: smartQueries.value,
+        queryTabHistory: queryTabHistory.value,
+        queryTabSequence: queryTabSequence.value,
       }))
     }
   }
 
-  watch([tabs, activeTabId, activeConnectionId, activeTabIdsByConnection, savedQueries, smartQueries], persistWorkspace, { deep: true, flush: 'sync' })
+  watch([tabs, activeTabId, activeConnectionId, activeTabIdsByConnection, savedQueries, smartQueries, queryTabHistory, queryTabSequence], persistWorkspace, { deep: true, flush: 'sync' })
 
   function rememberActiveTab(tabId = activeTabId.value) {
     const tab = tabs.value.find((item) => item.id === tabId)
@@ -208,6 +234,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     tabs.value = orderedTabs(tabs.value)
     activeTabId.value = tab.id
   }
+  function nextQueryTabNumber() {
+    queryTabSequence.value += 1
+    return queryTabSequence.value
+  }
+  function archiveQueryTabs(items: WorkspaceTab[]) {
+    const archived = items.filter((tab): tab is WorkspaceTab & { type: 'sql'; connectionId: string; sql: string } => tab.type === 'sql' && Boolean(tab.connectionId) && Boolean(tab.sql?.trim()))
+    if (!archived.length) return
+    const snapshots = archived.map((tab): QueryTabHistory => ({ id: tab.id, title: tab.title, connectionId: tab.connectionId, executionConnectionId: tab.executionConnectionId, sql: tab.sql, queryNumber: tab.queryNumber, savedQueryId: tab.savedQueryId, closedAt: new Date().toISOString() }))
+    const archivedIds = new Set(snapshots.map((tab) => tab.id))
+    queryTabHistory.value = [...snapshots, ...queryTabHistory.value.filter((tab) => !archivedIds.has(tab.id))].slice(0, 50)
+  }
+  function removeQueryTabHistory(id: string) { queryTabHistory.value = queryTabHistory.value.filter((tab) => tab.id !== id) }
   function closeTabs(ids: Set<string>) {
     const closableIds = new Set([...ids].filter((id) => id !== homeTabId))
     if (!closableIds.size) return
@@ -282,5 +320,5 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await api(`/smart-queries/${encodeURIComponent(id)}`, { method: 'DELETE' })
     smartQueries.value = smartQueries.value.filter((query) => query.id !== id)
   }
-  return { connections, activeConnectionId, activeConnection, tabs, activeTabId, savedQueries, smartQueries, refreshConnections, reloadWorkspaceQueries, syncWorkspaceQueries, connectConnection, disconnectConnection, revalidateConnection, openTab, closeTabs, closeTab, closeTabsToRight, closeOtherTabs, moveTab, saveQuery, removeSavedQuery, addSmartQuery, updateSmartQuery, removeSmartQuery, restoreWorkspace }
+  return { connections, activeConnectionId, activeConnection, tabs, activeTabId, savedQueries, smartQueries, queryTabHistory, queryTabSequence, refreshConnections, reloadWorkspaceQueries, syncWorkspaceQueries, connectConnection, disconnectConnection, revalidateConnection, openTab, closeTabs, closeTab, closeTabsToRight, closeOtherTabs, moveTab, nextQueryTabNumber, archiveQueryTabs, removeQueryTabHistory, saveQuery, removeSavedQuery, addSmartQuery, updateSmartQuery, removeSmartQuery, restoreWorkspace }
 })

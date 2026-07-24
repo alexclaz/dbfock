@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Connection, QueryHistory, QueryResult, SavedQuery, SmartQuery, TableStructure, TransactionStatus, WorkspaceTab } from '~/types/database'
+import type { Connection, QueryHistory, QueryResult, QueryTabHistory, SavedQuery, SmartQuery, TableStructure, TransactionStatus, WorkspaceTab } from '~/types/database'
 import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits } from '~/utils/queryResult'
 
 type EditableResultSource = { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }
@@ -15,7 +15,7 @@ type ResultTab = {
 }
 type SmartResultTab = ResultTab & { connectionId: string; smartQueryId: string }
 type AISettings = { configured: boolean }
-type PendingSave = { tab: WorkspaceTab; resolve: (saved: boolean) => void }
+type PendingSave = { initialValue: string; save: (name: string) => Promise<boolean>; resolve: (saved: boolean) => void }
 type PendingConfirmation = { title: string; description: string; confirmLabel: string; cancelLabel?: string; tone?: 'default' | 'danger'; resolve: (confirmed: boolean) => void }
 
 const workspace = useWorkspaceStore()
@@ -61,7 +61,7 @@ const activeResultTabs = computed(() => resultTabs[activeTab.value.id] || [])
 const activeResultTab = computed(() => activeResultTabs.value.find((tab) => tab.id === activeResultTabIds[activeTab.value.id]))
 const activeResultSummary = computed(() => activeResultTab.value?.result ? `${t('query.rows', { count: `${activeResultTab.value.result.rowCount}${activeResultTab.value.result.hasMore ? '+' : ''}` })} · ${activeResultTab.value.result.executionTimeMs} ms · ${t('query.affected', { count: activeResultTab.value.result.affectedRows })}` : t('query.results'))
 const showAIAgent = computed(() => aiConfigured.value && aiVisible.value)
-const globalTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'settings'])
+const globalTabTypes = new Set<WorkspaceTab['type']>(['welcome', 'saved', 'smart', 'history', 'settings'])
 const visibleTabs = computed(() => workspace.tabs.filter((tab) => globalTabTypes.has(tab.type) || tab.connectionId === workspace.activeConnectionId))
 const queryConnectionId = computed(() => activeTab.value.executionConnectionId === 'auto' ? activeTab.value.connectionId : activeTab.value.executionConnectionId ?? activeTab.value.connectionId)
 const queryConnection = computed(() => workspace.connections.find((connection) => connection.id === queryConnectionId.value))
@@ -87,8 +87,9 @@ function newSQL() { openSQLForConnection(workspace.activeConnectionId) }
 function openSQLForConnection(connectionId?: string) {
   const connection = connectionId ? workspace.connections.find((item) => item.id === connectionId) : workspace.activeConnection
   if (!connection) { showConnection.value = true; return }
+  const queryNumber = workspace.nextQueryTabNumber()
   workspace.activeConnectionId = connection.id
-  workspace.openTab({ id: `sql:${connection.id}:${Date.now()}`, title: t('query.defaultTitle'), type: 'sql', connectionId: connection.id, executionConnectionId: connection.id, sql: 'SELECT * FROM users LIMIT 100;' })
+  workspace.openTab({ id: `sql:${connection.id}:${Date.now()}`, title: t('query.defaultTitle', { number: queryNumber }), type: 'sql', connectionId: connection.id, executionConnectionId: connection.id, sql: 'SELECT * FROM users LIMIT 100;', queryNumber })
 }
 function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup') {
   const existing = workspace.tabs.find((tab) => tab.id === 'settings')
@@ -103,6 +104,7 @@ function openConnectionHome(connection: Connection) {
 }
 function openSavedQueries() { workspace.openTab({ id: 'saved-queries', title: t('savedQueries.title'), type: 'saved' }) }
 function openSmartQueries() { workspace.openTab({ id: 'smart-queries', title: t('smartQueries.title'), type: 'smart' }) }
+function openQueryHistory() { workspace.openTab({ id: 'query-history', title: t('query.historyTitle'), type: 'history' }) }
 
 function openSavedQuery() {
   const query = workspace.savedQueries.find((item) => item.id === selectedSavedQueryId.value)
@@ -114,7 +116,7 @@ function openSavedQuery() {
     workspace.activeTabId = existingTab.id
     return
   }
-  workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: query.name, type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql, savedQueryId: query.id })
+  workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: query.name, type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql, queryNumber: workspace.nextQueryTabNumber(), savedQueryId: query.id })
 }
 
 function openSavedQueryById(id: string) {
@@ -135,6 +137,39 @@ async function removeSmartQuery(id: string) {
   if (!query || !await confirmAction({ title: t('smartQueries.deleteTitle'), description: t('smartQueries.deleteConfirm', { name: query.title }), confirmLabel: t('smartQueries.delete'), tone: 'danger' })) return
   await workspace.removeSmartQuery(id)
 }
+function openHistoryQuery(query: QueryHistory) {
+  const queryNumber = workspace.nextQueryTabNumber()
+  workspace.activeConnectionId = query.connectionId
+  workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: t('query.defaultTitle', { number: queryNumber }), type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql, queryNumber })
+}
+function saveHistoryQuery(query: QueryHistory) {
+  if (!query.sql.trim()) return
+  const initialValue = t('query.defaultTitle', { number: workspace.queryTabSequence + 1 })
+  return new Promise<boolean>((resolve) => {
+    pendingSave.value = {
+      initialValue,
+      save: async (name) => {
+        await workspace.saveQuery({ name: name.trim(), connectionId: query.connectionId, sql: query.sql })
+        notifySuccess(t('query.savedFromHistory'))
+        return true
+      },
+      resolve,
+    }
+  })
+}
+function reopenQueryTab(item: QueryTabHistory) {
+  workspace.activeConnectionId = item.connectionId
+  workspace.openTab({ id: `sql:${item.connectionId}:${Date.now()}`, title: item.title, type: 'sql', connectionId: item.connectionId, executionConnectionId: item.executionConnectionId || item.connectionId, sql: item.sql, queryNumber: item.queryNumber, savedQueryId: item.savedQueryId })
+}
+async function removeQueryTabHistory(item: QueryTabHistory) {
+  if (!await confirmAction({ title: t('query.removeTabHistoryTitle'), description: t('query.removeTabHistoryConfirm', { name: item.title }), confirmLabel: t('query.removeTabHistory'), tone: 'danger' })) return
+  workspace.removeQueryTabHistory(item.id)
+}
+async function removeHistoryQuery(query: QueryHistory) {
+  if (!await confirmAction({ title: t('query.deleteHistoryTitle'), description: t('query.deleteHistoryConfirm'), confirmLabel: t('query.deleteHistory'), tone: 'danger' })) return
+  await api(`/query-history/${encodeURIComponent(query.id)}`, { method: 'DELETE' })
+  history.value = history.value.filter((item) => item.id !== query.id)
+}
 function savedQueryLabel(query: SavedQuery) {
   const connection = workspace.connections.find((item) => item.id === query.connectionId)
   return `${query.name} · ${connection?.name || t('savedQueries.connectionUnavailable')}`
@@ -152,13 +187,13 @@ async function persistQuery(tab: WorkspaceTab, name: string) {
 function saveQuery(tab = activeTab.value): Promise<boolean> {
   if (tab.type !== 'sql' || !(tab.executionConnectionId === 'auto' ? tab.connectionId : tab.executionConnectionId ?? tab.connectionId) || !tab.sql?.trim()) return Promise.resolve(false)
   if (tab.savedQueryId) return persistQuery(tab, tab.title)
-  return new Promise((resolve) => { pendingSave.value = { tab, resolve } })
+  return new Promise((resolve) => { pendingSave.value = { initialValue: tab.title, save: (name) => persistQuery(tab, name), resolve } })
 }
 async function resolveSave(name?: string) {
   const pending = pendingSave.value
   if (!pending) return
   pendingSave.value = undefined
-  pending.resolve(name ? await persistQuery(pending.tab, name) : false)
+  pending.resolve(name ? await pending.save(name) : false)
 }
 function confirmAction(options: Omit<PendingConfirmation, 'resolve'>) {
   return new Promise<boolean>((resolve) => { pendingConfirmation.value = { ...options, resolve } })
@@ -183,6 +218,7 @@ async function requestCloseTabs(targets: WorkspaceTab[]) {
     }
   }
   recentlyClosedTabs.value = [...recentlyClosedTabs.value, ...targets.filter((tab) => tab.id !== 'welcome').map((tab) => ({ ...tab }))].slice(-20)
+  workspace.archiveQueryTabs(targets)
   workspace.closeTabs(new Set(targets.map((tab) => tab.id)))
 }
 function reopenLastClosedTab() {
@@ -635,7 +671,7 @@ watch(() => workspace.activeConnectionId, () => {
 
 <template>
   <div class="flex h-full">
-    <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @new-query="openSQLForConnection($event.id)" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @settings="openSettings" />
+    <DatabaseTree :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @new-query="openSQLForConnection($event.id)" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @history="openQueryHistory" @settings="openSettings" />
     <div class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeConnections" />
     <section class="flex min-w-0 flex-1 flex-col">
       <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" :can-reopen="recentlyClosedTabs.length > 0" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reopen="reopenLastClosedTab" @reorder="workspace.moveTab" @new-query="newSQL" />
@@ -660,6 +696,7 @@ watch(() => workspace.activeConnectionId, () => {
         </div>
         <SavedQueriesWorkspace v-else-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
         <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
+        <QueryHistoryWorkspace v-else-if="activeTab.type === 'history'" :tabs="workspace.queryTabHistory" :queries="history" :connections="workspace.connections" @open-tab="reopenQueryTab" @remove-tab="removeQueryTabHistory" @open="openHistoryQuery" @save="saveHistoryQuery" @remove="removeHistoryQuery" />
         <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`table:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" @open-database="openDatabaseFromTable" @open-table="openDatabaseTable" />
         <DatabaseWorkspace v-else-if="activeTab.type === 'database' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`database:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :active-section="activeTab.databaseSection" @table="openDatabaseTable" @update:active-section="updateDatabaseSection" />
         <ConnectionHomeWorkspace v-else-if="activeTab.type === 'connection-home' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`connection-home:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" @edit="editing = $event; showConnection = true" @new-query="openSQLForConnection($event.id)" @stats="openStats" @database="openDatabase" />
@@ -676,12 +713,11 @@ watch(() => workspace.activeConnectionId, () => {
           <QueryResults :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :loading="running" :loading-more="loadingMoreRows" :can-create-tab="true" :summary="activeResultSummary" @select-tab="activeResultTabIds[activeTab.id] = $event" @close-tab="closeResultTab(activeTab.id, $event)" @create-tab="createResultTab(activeTab.id)" @copy="copyActiveResult" @save="saveActiveResultEdits" @load-more="loadMoreRows" />
         </div>
       </div>
-      <div class="border-t border-line bg-panel px-4 py-2"><details><summary class="cursor-pointer text-xs font-medium text-muted">{{ t('query.history', { count: history.length }) }}</summary><div class="scrollbar mt-2 max-h-28 overflow-auto"><button v-for="item in history" :key="item.id" class="flex w-full items-center gap-1.5 truncate py-1 text-left font-mono text-xs text-muted hover:text-ink" @click="workspace.openTab({ id: `sql:${item.connectionId}:${Date.now()}`, title: t('query.historyTitle'), type: 'sql', connectionId: item.connectionId, executionConnectionId: item.connectionId, sql: item.sql })"><Icon :name="item.status === 'error' ? 'lucide:circle-x' : 'lucide:circle-check'" class="h-3.5 w-3.5 shrink-0" :class="item.status === 'error' ? 'text-rose-500' : 'text-emerald-500'" aria-hidden="true" /><span class="truncate">{{ item.sql }}</span></button></div></details></div>
     </section>
     <ConnectionModal v-model="showConnection" :connection="editing" @saved="saved" @deleted="deleted" />
     <TransactionCommitModal v-if="commitConnectionId" :model-value="true" :connection-name="workspace.connections.find((connection) => connection.id === commitConnectionId)?.name || ''" :statements="transactionStatus[commitConnectionId]?.statements || []" :committing="committing" @update:model-value="commitConnectionId = undefined" @commit="commitTransaction" @rollback="rollbackTransaction" />
     <GlobalSearch v-if="showGlobalSearch" :tabs="workspace.tabs" :active-tab-id="workspace.activeTabId" :saved-queries="connectionSavedQueries" :smart-queries="workspace.smartQueries" :connections="workspace.connections" @close="showGlobalSearch = false" @select-tab="workspace.activeTabId = $event" @open-saved-query="openSavedQueryById" @open-smart-query="openSmartQueryById" @new-query="newSQL" @open-settings="openSettings" />
-    <QuerySaveDialog :model-value="Boolean(pendingSave)" :initial-value="pendingSave?.tab.title || ''" :title="t('query.saveTitle')" :description="t('query.saveDescription')" :label="t('query.nameLabel')" :confirm-label="t('query.saveAction')" :cancel-label="t('connection.cancel')" @update:model-value="(value) => { if (!value) resolveSave() }" @confirm="resolveSave" />
+    <QuerySaveDialog :model-value="Boolean(pendingSave)" :initial-value="pendingSave?.initialValue || ''" :title="t('query.saveTitle')" :description="t('query.saveDescription')" :label="t('query.nameLabel')" :confirm-label="t('query.saveAction')" :cancel-label="t('connection.cancel')" @update:model-value="(value) => { if (!value) resolveSave() }" @confirm="resolveSave" />
     <AppConfirmDialog :model-value="Boolean(pendingConfirmation)" :title="pendingConfirmation?.title || ''" :description="pendingConfirmation?.description || ''" :confirm-label="pendingConfirmation?.confirmLabel || ''" :cancel-label="pendingConfirmation?.cancelLabel || t('connection.cancel')" :tone="pendingConfirmation?.tone" @update:model-value="(value) => { if (!value) resolveConfirmation(false) }" @confirm="resolveConfirmation(true)" />
   </div>
 </template>

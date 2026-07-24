@@ -3,7 +3,7 @@ import { autocompletion, completionKeymap, startCompletion, type Completion, typ
 import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from '@codemirror/commands'
 import { sql, MySQL } from '@codemirror/lang-sql'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { EditorState, StateEffect, StateField } from '@codemirror/state'
+import { Compartment, EditorState, StateEffect, StateField } from '@codemirror/state'
 import { Decoration, drawSelection, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import type { ColumnInfo, Connection, DatabaseInfo, TableInfo } from '~/types/database'
@@ -12,6 +12,9 @@ const props = withDefaults(defineProps<{ modelValue: string; connectionId: strin
 const emit = defineEmits<{ 'update:modelValue': [value: string]; 'update:executionConnectionId': [value?: string]; execute: [sql: string, newResultTab?: boolean]; explain: [sql: string]; improve: [sql: string]; createSmartQuery: [sql: string]; sendToChat: [sql: string]; newQuery: []; saveQuery: [] }>()
 const api = useApi()
 const { t } = useI18n()
+type ThemePreference = 'dbfock-light' | 'dbfock-dark' | 'github-light' | 'github-dark' | 'one-dark' | 'dracula' | 'cobalt2' | 'claude-code' | 'supabase' | 'monokai' | 'vscode-light' | 'vscode-dark'
+const themePreference = useState<ThemePreference>('theme-preference', () => 'vscode-dark')
+const isDarkTheme = computed(() => !['dbfock-light', 'github-light', 'vscode-light'].includes(themePreference.value))
 const editorHost = ref<HTMLElement>()
 const metadataState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const databases = ref<DatabaseInfo[]>([])
@@ -26,6 +29,7 @@ const copied = ref(false)
 const searchQuery = ref('')
 const searchMatchIndex = ref(-1)
 const searchInput = ref<HTMLInputElement>()
+const themeCompartment = new Compartment()
 const searchHighlightMark = Decoration.mark({ class: 'cm-searchMatch' })
 const setSearchHighlights = StateEffect.define<DecorationSet>()
 const searchHighlights = StateField.define<DecorationSet>({
@@ -358,18 +362,20 @@ function mountSearchControls() {
   updateSearchControls()
 }
 
-const theme = EditorView.theme({
+function createEditorTheme(dark: boolean) {
+  return EditorView.theme({
   '&': { height: '100%', backgroundColor: 'rgb(var(--editor-canvas))', color: 'rgb(var(--editor-ink))', fontSize: 'var(--ide-editor-font-size, 13px)' },
   '.cm-scroller': { fontFamily: 'var(--code-font)', lineHeight: 'var(--ide-editor-line-height, 22px)' },
   '.cm-content': { padding: '10px 0' },
   '.cm-gutters': { backgroundColor: 'rgb(var(--editor-panel))', color: 'rgb(var(--editor-muted))', border: 'none' },
   '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'rgb(var(--editor-active))' },
   '.cm-cursor': { borderLeftColor: 'rgb(var(--accent))' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'rgb(var(--editor-selection))' },
+  '& .cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': { backgroundColor: 'rgb(var(--editor-selection))' },
   '.cm-searchMatch': { backgroundColor: 'rgb(var(--accent) / 0.28)', borderRadius: '2px' },
   '.cm-tooltip': { backgroundColor: 'rgb(var(--editor-tooltip))', border: '1px solid rgb(var(--editor-line))' },
   '.cm-completionLabel': { color: 'rgb(var(--editor-ink))' },
-}, { dark: true })
+  }, { dark })
+}
 const highlights = HighlightStyle.define([
   { tag: tags.keyword, color: 'rgb(var(--syntax-key))', fontWeight: '700' },
   { tag: [tags.string, tags.special(tags.string)], color: 'rgb(var(--syntax-string))' },
@@ -396,8 +402,9 @@ function closeContextMenuOnKeyDown(event: KeyboardEvent) { if (event.key === 'Es
 
 watch(() => props.modelValue, (value) => { if (!syncing && view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } }) })
 watch(() => props.connectionId, () => { databases.value = []; tablesByDatabase.clear(); columnsByTable.clear(); metadataState.value = 'idle'; loadDatabases() })
+watch(isDarkTheme, (dark) => { view?.dispatch({ effects: themeCompartment.reconfigure(createEditorTheme(dark)) }) })
 onMounted(() => {
-  view = new EditorView({ state: EditorState.create({ doc: props.modelValue, extensions: [lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), theme, contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] }), parent: editorHost.value! })
+  view = new EditorView({ state: EditorState.create({ doc: props.modelValue, extensions: [lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { updateSearch(); updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] }), parent: editorHost.value! })
   mountSearchControls()
   document.addEventListener('pointerdown', closeContextMenuOnPointerDown)
   document.addEventListener('keydown', closeContextMenuOnKeyDown)

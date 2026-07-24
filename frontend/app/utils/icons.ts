@@ -5,6 +5,7 @@ const workspaceIcons: Record<WorkspaceTab['type'], string> = {
   welcome: 'lucide:house',
   saved: 'lucide:bookmark',
   smart: 'lucide:sparkles',
+  history: 'lucide:history',
   sql: 'lucide:file-code-2',
   table: 'lucide:table-2',
   database: 'lucide:database',

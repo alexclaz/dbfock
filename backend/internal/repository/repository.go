@@ -542,12 +542,17 @@ func (r *Repository) CreateAIChatJob(ctx context.Context) (models.AIChatJob, err
 
 func (r *Repository) GetAIChatJob(ctx context.Context, userID, id string) (models.AIChatJob, error) {
 	var job models.AIChatJob
-	err := r.db.QueryRowContext(ctx, `SELECT id,status,message,error_message,created_at,updated_at FROM ai_chat_jobs WHERE id=? AND user_id=?`, id, userID).Scan(&job.ID, &job.Status, &job.Message, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, `SELECT id,status,message,partial_message,error_message,created_at,updated_at FROM ai_chat_jobs WHERE id=? AND user_id=?`, id, userID).Scan(&job.ID, &job.Status, &job.Message, &job.PartialMessage, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	return job, err
 }
 
+func (r *Repository) UpdateAIChatJobPartial(ctx context.Context, id, message string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE ai_chat_jobs SET partial_message=?,updated_at=? WHERE id=? AND user_id=? AND status='running'`, message, time.Now().UTC(), id, LocalUserID)
+	return err
+}
+
 func (r *Repository) CompleteAIChatJob(ctx context.Context, id, message string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE ai_chat_jobs SET status='complete',message=?,error_message='',updated_at=? WHERE id=? AND user_id=?`, message, time.Now().UTC(), id, LocalUserID)
+	_, err := r.db.ExecContext(ctx, `UPDATE ai_chat_jobs SET status='complete',message=?,partial_message='',error_message='',updated_at=? WHERE id=? AND user_id=?`, message, time.Now().UTC(), id, LocalUserID)
 	return err
 }
 

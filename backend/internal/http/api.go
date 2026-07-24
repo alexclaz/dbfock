@@ -1038,8 +1038,14 @@ type aiRelationship struct {
 }
 
 type aiDatabaseSelection struct {
-	Databases []string `json:"databases"`
+	NeedsSchema *bool    `json:"needsSchema"`
+	Databases   []string `json:"databases"`
 }
+
+func canAnswerWithoutAISchema(selection aiDatabaseSelection) bool {
+	return selection.NeedsSchema != nil && !*selection.NeedsSchema
+}
+
 type aiTableSelection struct {
 	Tables []aiTableRef `json:"tables"`
 }
@@ -1058,6 +1064,8 @@ type aiValidation struct {
 	SQL    string `json:"sql"`
 	Answer string `json:"answer"`
 }
+
+const aiAssistantRole = "You are DBfock AI, an expert MySQL database assistant. Help users understand and solve SQL and database problems; you are not limited to generating queries. You can answer SQL questions, explain and review queries, diagnose errors, improve correctness, readability and performance, and suggest indexes, transactions, and data-modeling approaches. Use the supplied schema as the source of truth for connection-specific identifiers and facts. Never translate, rename, normalize, or invent database, table, or column identifiers; use backticks around identifiers in SQL. For a query review, preserve its result semantics unless the user asks to change them and explain material trade-offs. Answer general SQL questions directly and clearly distinguish assumptions from verified schema facts. Prefer safe, read-only examples. For write or destructive SQL, explain the impact and recommend safeguards such as a WHERE clause, transaction, backup, or validation; never claim to have executed SQL. Answer in the user's language."
 
 type cachedAISchema struct {
 	expiresAt  time.Time
@@ -1521,7 +1529,7 @@ func (a *API) aiChat(w http.ResponseWriter, r *http.Request) {
 	if err := decode(w, r, &in); err != nil {
 		return
 	}
-	message, err := a.generateAIChat(r.Context(), in)
+	message, err := a.generateAIChat(r.Context(), in, nil)
 	if err != nil {
 		fail(w, err)
 		return
@@ -1559,7 +1567,16 @@ func (a *API) getAIChatJob(w http.ResponseWriter, r *http.Request) {
 func (a *API) runAIChatJob(id string, in aiChatRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), aiWorkflowTimeout)
 	defer cancel()
-	message, err := a.generateAIChat(ctx, in)
+	lastSaved := time.Time{}
+	message, err := a.generateAIChat(ctx, in, func(partial string) {
+		if partial == "" || (partial == "" && !lastSaved.IsZero()) || time.Since(lastSaved) < 150*time.Millisecond {
+			return
+		}
+		lastSaved = time.Now()
+		if saveErr := a.repo.UpdateAIChatJobPartial(context.Background(), id, partial); saveErr != nil {
+			a.log.Debug("save AI chat partial", "job_id", id, "error", saveErr)
+		}
+	})
 	if err != nil {
 		a.log.Error("AI chat job failed", "job_id", id, "error", err)
 		_ = a.repo.FailAIChatJob(context.Background(), id, err.Error())
@@ -1600,10 +1617,97 @@ func formatAIGeneration(generated aiGeneration) string {
 	return answer + "```sql\n" + strings.TrimSpace(generated.SQL) + "\n```"
 }
 
+// partialAIGeneration turns an incomplete JSON response from a streaming
+// provider into the human-readable portion that can be shown in the chat.
+func partialAIGeneration(raw string) string {
+	answer := partialAIJSONString(raw, "answer")
+	sql := partialAIJSONString(raw, "sql")
+	if sql == "" {
+		return answer
+	}
+	if answer != "" {
+		answer += "\n\n"
+	}
+	return answer + "```sql\n" + sql
+}
+
+func partialAIJSONString(raw, field string) string {
+	marker := `"` + field + `"`
+	start := strings.Index(raw, marker)
+	if start < 0 {
+		return ""
+	}
+	value := raw[start+len(marker):]
+	colon := strings.Index(value, ":")
+	if colon < 0 {
+		return ""
+	}
+	value = strings.TrimLeft(value[colon+1:], " \t\r\n")
+	if !strings.HasPrefix(value, `"`) {
+		return ""
+	}
+	value = value[1:]
+	var out strings.Builder
+	escaped := false
+	for _, char := range value {
+		if escaped {
+			switch char {
+			case 'n':
+				out.WriteByte('\n')
+			case 'r':
+				out.WriteByte('\r')
+			case 't':
+				out.WriteByte('\t')
+			case '"', '\\', '/':
+				out.WriteRune(char)
+			}
+			escaped = false
+			continue
+		}
+		if char == '\\' {
+			escaped = true
+			continue
+		}
+		if char == '"' {
+			break
+		}
+		out.WriteRune(char)
+	}
+	return out.String()
+}
+
+func (a *API) streamAIGeneration(ctx context.Context, setting models.AISetting, run ai.AuditRun, stage, system, prompt string, onPartial func(string)) (string, error) {
+	if onPartial == nil {
+		return a.ai.ChatWithAudit(ctx, setting, run, stage, system, prompt)
+	}
+	var raw strings.Builder
+	return a.ai.ChatWithAuditStream(ctx, setting, run, stage, system, prompt, func(chunk string) {
+		raw.WriteString(chunk)
+		onPartial(partialAIGeneration(raw.String()))
+	})
+}
+
+// generateGeneralAIChat handles questions that can be answered from the SQL
+// included in the conversation or from MySQL knowledge alone. Keeping these
+// questions out of schema discovery makes the agent useful for explanations,
+// debugging, and reviews as well as query generation.
+func (a *API) generateGeneralAIChat(ctx context.Context, in aiChatRequest, setting models.AISetting, run ai.AuditRun, onPartial func(string)) (string, error) {
+	system := aiAssistantRole + " The user has not asked for live schema facts. Do not claim that an identifier exists or that a query was validated against the connection. If the user only asks for an explanation, do not include SQL. " + aiJSONOnly
+	raw, err := a.streamAIGeneration(ctx, setting, run, "general_answer", system, aiConversation(in.History, in.Prompt)+"\nJSON shape: {\"answer\":\"clear, practical answer\",\"sql\":\"SQL only, without Markdown; empty when no SQL is useful\"}", onPartial)
+	if err != nil {
+		return "", err
+	}
+	var generated aiGeneration
+	if !decodeAIJSON(raw, &generated) {
+		return "", fmt.Errorf("AI returned an invalid assistant response")
+	}
+	return formatAIGeneration(generated), nil
+}
+
 // generateFastAIChat uses deterministic local schema retrieval plus one model
 // call. It is opt-in because a manually reviewed progressive workflow remains
 // valuable for ambiguous, unusually named schemas.
-func (a *API) generateFastAIChat(ctx context.Context, in aiChatRequest, setting models.AISetting, c models.Connection, p database.Provider, preferredDatabase string) (string, error) {
+func (a *API) generateFastAIChat(ctx context.Context, in aiChatRequest, setting models.AISetting, c models.Connection, p database.Provider, preferredDatabase string, onPartial func(string)) (string, error) {
 	catalog, err := a.aiSchemaCatalog(ctx, c, p)
 	if err != nil {
 		return "", err
@@ -1627,8 +1731,8 @@ func (a *API) generateFastAIChat(ctx context.Context, in aiChatRequest, setting 
 	if err != nil {
 		return "", err
 	}
-	system := "You generate safe MySQL SQL using only the retrieved schema. Table, column, and database names are literal identifiers: never translate, rename, normalize, or invent them. Use backticks around every database, table, and column identifier. If the request is informational and needs no SQL, leave sql empty. Answer in the user's language. " + aiJSONOnly
-	raw, err := a.ai.ChatWithAudit(ctx, setting, run, "fast_generate_sql", system, aiConversation(in.History, in.Prompt)+"\nRetrieved schema:"+focusedSchema+"\nJSON shape: {\"sql\":\"SQL only, without Markdown\",\"answer\":\"brief explanation\"}")
+	system := aiAssistantRole + " Use the retrieved schema below when the answer needs connection-specific facts. If the request is informational and needs no SQL, leave sql empty. " + aiJSONOnly
+	raw, err := a.streamAIGeneration(ctx, setting, run, "fast_generate_sql", system, aiConversation(in.History, in.Prompt)+"\nRetrieved schema:"+focusedSchema+"\nJSON shape: {\"answer\":\"brief explanation\",\"sql\":\"SQL only, without Markdown\"}", onPartial)
 	if err != nil {
 		return "", err
 	}
@@ -1642,7 +1746,7 @@ func (a *API) generateFastAIChat(ctx context.Context, in aiChatRequest, setting 
 	return formatAIGeneration(generated), nil
 }
 
-func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, error) {
+func (a *API) generateAIChat(ctx context.Context, in aiChatRequest, onPartial func(string)) (string, error) {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return "", fmt.Errorf("prompt is required")
 	}
@@ -1664,7 +1768,7 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 		databaseName = c.InitialDatabase
 	}
 	if in.FastSchemaRetrieval {
-		return a.generateFastAIChat(ctx, in, s, c, p, databaseName)
+		return a.generateFastAIChat(ctx, in, s, c, p, databaseName, onPartial)
 	}
 	// Discovery is deliberately progressive: the model first sees database
 	// names, then only the selected tables, and only then their columns. This
@@ -1694,11 +1798,14 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 		}
 	} else {
 		var databaseChoice aiDatabaseSelection
-		raw, chatErr := a.ai.ChatWithAudit(ctx, s, auditRun, "select_database", "You select the database(s) relevant to a MySQL request. Choose only exact names from the supplied list. "+aiJSONOnly, conversation+"\nAccessible databases: "+strings.Join(databaseNames, ", ")+"\nJSON shape: {\"databases\":[\"database\"]}")
+		raw, chatErr := a.ai.ChatWithAudit(ctx, s, auditRun, "select_database", "Decide whether a MySQL request needs live connection schema. Set needsSchema to false only when it can be answered from general SQL knowledge or SQL included in the request, such as an explanation, review, debugging question, or conceptual question. Set it to true when it needs actual tables, columns, relationships, or other connection-specific facts; then choose only the exact relevant database names from the supplied list. "+aiJSONOnly, conversation+"\nAccessible databases: "+strings.Join(databaseNames, ", ")+"\nJSON shape: {\"needsSchema\":true,\"databases\":[\"database\"]}")
 		if chatErr != nil {
 			return "", chatErr
 		}
 		_ = decodeAIJSON(raw, &databaseChoice)
+		if canAnswerWithoutAISchema(databaseChoice) {
+			return a.generateGeneralAIChat(ctx, in, s, auditRun, onPartial)
+		}
 		selectedDatabaseNames = selectedDatabases(databaseChoice, databaseNames, databaseName)
 	}
 	if len(selectedDatabaseNames) == 0 {
@@ -1775,7 +1882,7 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 	focusedSchema := aiColumnList(selectedTableRefs, structures, selectedColumnNames, selectedRelationNames)
 
 	var generated aiGeneration
-	raw, err = a.ai.ChatWithAudit(ctx, s, auditRun, "generate_sql", "You generate safe MySQL SQL using only the focused schema supplied. Identifiers are literal: never translate, rename, normalize, or invent them; use backticks around identifiers. If the request is informational and needs no SQL, leave sql empty. Answer in the user's language. "+aiJSONOnly, conversation+"\nFocused schema:"+focusedSchema+"\nJSON shape: {\"sql\":\"SQL only, without Markdown\",\"answer\":\"brief explanation\"}")
+	raw, err = a.ai.ChatWithAudit(ctx, s, auditRun, "generate_sql", aiAssistantRole+" Use the focused schema supplied below when the answer needs connection-specific facts. If the request is informational and needs no SQL, leave sql empty. "+aiJSONOnly, conversation+"\nFocused schema:"+focusedSchema+"\nJSON shape: {\"answer\":\"brief explanation\",\"sql\":\"SQL only, without Markdown\"}")
 	if err != nil {
 		return "", err
 	}
@@ -1787,7 +1894,7 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 	}
 
 	var validation aiValidation
-	raw, err = a.ai.ChatWithAudit(ctx, s, auditRun, "validate_sql", "You validate MySQL SQL against the focused schema. Correct the SQL only when necessary. Reject SQL that needs identifiers or relationships not present in the schema. Answer in the user's language. "+aiJSONOnly, conversation+"\nFocused schema:"+focusedSchema+"\nGenerated SQL:\n"+generated.SQL+"\nJSON shape: {\"valid\":true,\"sql\":\"validated SQL only, without Markdown\",\"answer\":\"brief validation result\"}")
+	raw, err = a.streamAIGeneration(ctx, s, auditRun, "validate_sql", "You validate MySQL SQL against the focused schema. Correct the SQL only when necessary, preserve the user's requested semantics, and reject SQL that needs identifiers or relationships not present in the schema. For write or destructive SQL, call out the impact and necessary safeguards in the answer. Answer in the user's language. "+aiJSONOnly, conversation+"\nFocused schema:"+focusedSchema+"\nGenerated SQL:\n"+generated.SQL+"\nJSON shape: {\"valid\":true,\"answer\":\"brief validation result\",\"sql\":\"validated SQL only, without Markdown\"}", onPartial)
 	if err != nil {
 		return "", err
 	}

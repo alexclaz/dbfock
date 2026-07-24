@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -167,10 +168,10 @@ func (s *Service) ListModels(ctx context.Context, provider, baseURL, apiKey stri
 	return result, nil
 }
 
-const chatSystemPrompt = `You are DBfock AI. Generate safe MySQL SQL using only the supplied schema.
-The supplied schema has an accessible-schema catalog followed by column-level details. The catalog is authoritative for the databases and tables available through this connection. If the request mentions a database or table outside the currently selected database, inspect that catalog first; do not say it is unavailable merely because it is absent from the selected database. If it appears in the catalog, use its supplied detailed schema. If a requested database or table is absent from the catalog, say so and name the available relevant identifiers instead of substituting a similar one.
-Table, column, and database names are literal identifiers. Never translate, rename, normalize, or invent identifiers, regardless of the language they use. Preserve their exact spelling, case, accents, and underscores, and use backticks around identifiers in generated SQL. If the requested field does not exist in the supplied schema, say so instead of substituting a similar name.
-Answer in the user's language. When the user asks to generate or change SQL, explain briefly and then place the SQL in a fenced sql block. For an explanation request, answer directly and do not provide alternative SQL unless asked.`
+const chatSystemPrompt = `You are DBfock AI, an expert MySQL database assistant. Help users understand and solve SQL and database problems; you are not limited to generating queries.
+You can explain SQL and database behavior, create queries, review and improve existing SQL, diagnose errors, discuss joins, filters, aggregations, transactions, execution plans, indexes, and data modeling. Answer general SQL questions directly. When the supplied schema or SQL is relevant, use it carefully; distinguish confirmed facts from assumptions and ask a concise clarifying question when needed.
+The supplied schema has an accessible-schema catalog followed by column-level details. The catalog is authoritative for connection-specific databases and tables. Table, column, and database names are literal identifiers: never translate, rename, normalize, or invent them. Preserve their exact spelling, case, accents, and underscores, and use backticks around identifiers in generated SQL. If a requested identifier is absent from the supplied schema, say so instead of substituting a similar one.
+For query reviews, preserve the original intent unless the user asks to change it, explain material trade-offs, and return a revised query only when useful. Prefer safe, read-only examples; for write or destructive operations, clearly call out the impact and recommend an appropriate WHERE clause, transaction, backup, or validation. Never claim to have executed SQL. Answer in the user's language. When SQL is requested or useful, explain briefly and then place it in a fenced sql block.`
 
 func (s *Service) Chat(ctx context.Context, setting models.AISetting, prompt string) (string, error) {
 	return s.ChatWithSystem(ctx, setting, chatSystemPrompt, prompt)
@@ -188,6 +189,18 @@ func (s *Service) ChatWithSystem(ctx context.Context, setting models.AISetting, 
 // temporarily unavailable.
 func (s *Service) ChatWithAudit(ctx context.Context, setting models.AISetting, run AuditRun, stage, systemPrompt, prompt string) (string, error) {
 	response, err := s.chat(ctx, setting, systemPrompt, prompt)
+	audit := models.AIAuditLog{RunID: run.ID, Question: run.Question, Stage: stage, Provider: setting.Provider, Model: setting.Model, Request: "System:\n" + systemPrompt + "\n\nUser:\n" + prompt, Response: response}
+	if err != nil {
+		audit.Error = err.Error()
+	}
+	_ = s.repo.AddAIAuditLog(context.WithoutCancel(ctx), audit)
+	return response, err
+}
+
+// ChatWithAuditStream forwards generated text as it arrives while preserving
+// the same local audit trail used by non-streaming calls.
+func (s *Service) ChatWithAuditStream(ctx context.Context, setting models.AISetting, run AuditRun, stage, systemPrompt, prompt string, onChunk func(string)) (string, error) {
+	response, err := s.chatStream(ctx, setting, systemPrompt, prompt, onChunk)
 	audit := models.AIAuditLog{RunID: run.ID, Question: run.Question, Stage: stage, Provider: setting.Provider, Model: setting.Model, Request: "System:\n" + systemPrompt + "\n\nUser:\n" + prompt, Response: response}
 	if err != nil {
 		audit.Error = err.Error()
@@ -295,4 +308,110 @@ func (s *Service) chatOnce(ctx context.Context, setting models.AISetting, system
 		return "", fmt.Errorf("AI provider returned no message")
 	}
 	return out.Choices[0].Message.Content, nil
+}
+
+func (s *Service) chatStream(ctx context.Context, setting models.AISetting, systemPrompt, prompt string, onChunk func(string)) (string, error) {
+	key := ""
+	var err error
+	if setting.APIKeyEncrypted != "" {
+		key, err = s.cipher.Decrypt(setting.APIKeyEncrypted)
+		if err != nil {
+			return "", err
+		}
+	}
+	url := setting.BaseURL + "/chat/completions"
+	body := map[string]any{"model": setting.Model, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": prompt}}, "temperature": 0.2, "stream": true}
+	if setting.Provider == "ollama" {
+		url = setting.BaseURL + "/api/chat"
+		body = map[string]any{"model": setting.Model, "messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": prompt}}, "stream": true}
+	} else if setting.Provider == "anthropic" {
+		url = setting.BaseURL + "/messages"
+		body = map[string]any{"model": setting.Model, "max_tokens": 2048, "system": systemPrompt, "messages": []map[string]string{{"role": "user", "content": prompt}}, "stream": true}
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if setting.Provider == "anthropic" {
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		return "", fmt.Errorf("AI provider returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var text strings.Builder
+	appendChunk := func(chunk string) {
+		if chunk == "" {
+			return
+		}
+		text.WriteString(chunk)
+		if onChunk != nil {
+			onChunk(chunk)
+		}
+	}
+	scanner := bufio.NewScanner(io.LimitReader(resp.Body, 2<<20))
+	scanner.Buffer(make([]byte, 0, 64*1024), 2<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		}
+		if line == "[DONE]" {
+			break
+		}
+		var chunk string
+		if setting.Provider == "anthropic" {
+			var event struct {
+				Type  string `json:"type"`
+				Delta struct {
+					Text string `json:"text"`
+				} `json:"delta"`
+			}
+			if json.Unmarshal([]byte(line), &event) == nil && event.Type == "content_block_delta" {
+				chunk = event.Delta.Text
+			}
+		} else if setting.Provider == "ollama" {
+			var event struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal([]byte(line), &event) == nil {
+				chunk = event.Message.Content
+			}
+		} else {
+			var event struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal([]byte(line), &event) == nil && len(event.Choices) > 0 {
+				chunk = event.Choices[0].Delta.Content
+			}
+		}
+		appendChunk(chunk)
+	}
+	if err := scanner.Err(); err != nil {
+		return text.String(), err
+	}
+	if text.Len() == 0 {
+		return "", fmt.Errorf("AI provider returned no streamed message")
+	}
+	return text.String(), nil
 }

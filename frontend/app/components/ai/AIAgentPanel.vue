@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AIAgentChat, AIChatJob, AISchemaTable, AIScopeConfirmation, DatabaseInfo, TableInfo } from '~/types/database'
+import type { AIAgentChat, AIAgentMessage, AIChatJob, AISchemaTable, AIScopeConfirmation, DatabaseInfo, TableInfo } from '~/types/database'
 
 const props = defineProps<{ tabId: string; connectionId: string; database?: string; query?: string; width?: number }>()
 const emit = defineEmits<{ apply: [sql: string]; status: [tabId: string, status: 'running' | 'complete'] }>()
@@ -62,6 +62,12 @@ const filteredTables = computed(() => {
 })
 const databaseScopeLabel = computed(() => t('aiAgent.databasesSelected', { count: selectedDatabases.value.length }))
 const tableScopeLabel = computed(() => t('aiAgent.tablesSelected', { count: selectedTables.value.length }))
+const starterPrompts = computed(() => [
+  { label: t('aiAgent.starterExplain'), prompt: t('aiAgent.starterExplainPrompt') },
+  { label: t('aiAgent.starterBuild'), prompt: t('aiAgent.starterBuildPrompt') },
+  { label: t('aiAgent.starterImprove'), prompt: t('aiAgent.starterImprovePrompt') },
+  { label: t('aiAgent.starterHelp'), prompt: t('aiAgent.starterHelpPrompt') },
+])
 const scopeConfirmationPrefix = '__DBFOCK_SCOPE_CONFIRMATION__:'
 
 function setDraft(value: string) { if (chat.value) chat.value.draft = value }
@@ -187,6 +193,21 @@ function formatExecutionTime(milliseconds: number) {
   if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`
   return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`
 }
+function jobAssistantMessage(tabId: string) {
+  const targetChat = ensureChat(tabId)
+  if (!targetChat) return undefined
+  const last = targetChat.messages.at(-1)
+  if (last?.role === 'assistant') return last
+  const message: AIAgentMessage = { role: 'assistant', content: '' }
+  targetChat.messages.push(message)
+  return message
+}
+function completeJobMessage(tabId: string, content: string, executionTime?: number) {
+  const message = jobAssistantMessage(tabId)
+  if (!message) return
+  message.content = content
+  if (executionTime !== undefined) message.executionTimeMs = executionTime
+}
 async function syncJob() {
   const tabId = props.tabId
   const targetTab = workspace.tabs.find((item) => item.id === tabId)
@@ -195,11 +216,19 @@ async function syncJob() {
   try {
     const job = await api<AIChatJob>(`/ai/chat/jobs/${jobId}`)
     if (targetTab.aiJobId !== job.id) return
-    if (job.status === 'running') { emit('status', tabId, 'running'); pollTimer = setTimeout(syncJob, 1000); return }
+    if (job.status === 'running') {
+      const message = jobAssistantMessage(tabId)
+      if (message && job.partialMessage) message.content = job.partialMessage
+      emit('status', tabId, 'running')
+      pollTimer = setTimeout(syncJob, 400)
+      return
+    }
     targetTab.aiJobId = undefined
     const targetChat = ensureChat(tabId)
     const confirmation = job.status === 'complete' ? parseScopeConfirmation(job.message || '') : undefined
     if (confirmation && targetChat) {
+      const pending = targetChat.messages.at(-1)
+      if (pending?.role === 'assistant' && !pending.content) targetChat.messages.pop()
       confirmationPicker.value = undefined
       targetChat.scopeConfirmation = confirmation
       targetChat.databaseScope = 'selected'
@@ -209,7 +238,7 @@ async function syncJob() {
         targetChat.selectedTables = confirmation.tables
       }
     } else {
-      targetChat?.messages.push({ role: 'assistant', content: job.status === 'complete' ? job.message || '' : t('aiAgent.error', { message: job.error || 'Unknown error' }), executionTimeMs: job.status === 'complete' ? executionTimeMs(job) : undefined })
+      completeJobMessage(tabId, job.status === 'complete' ? job.message || '' : t('aiAgent.error', { message: job.error || 'Unknown error' }), job.status === 'complete' ? executionTimeMs(job) : undefined)
     }
     emit('status', tabId, 'complete')
   } catch {
@@ -248,6 +277,10 @@ async function submit(message: string, scope: ScopeInput, addUserMessage: boolea
 async function send(message = chat.value?.draft || '') {
   await submit(message, { fastSchemaRetrieval: fastSchemaRetrieval.value, databaseScope: chat.value?.databaseScope || 'all', selectedDatabases: selectedDatabases.value, tableScope: chat.value?.tableScope || 'all', selectedTables: selectedTables.value }, true)
 }
+function useStarterPrompt(prompt: string) {
+  setDraft(prompt)
+  nextTick(() => promptInput.value?.focus())
+}
 async function confirmDatabases() {
   const confirmation = scopeConfirmation.value
   if (!confirmation) return
@@ -270,8 +303,13 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
   <aside class="flex min-w-80 shrink-0 flex-col border-l border-line bg-panel" :style="{ width: `${width ?? 50}%` }">
     <div class="flex justify-between border-b border-line p-3"><b class="text-sm">{{ t('aiAgent.title') }}</b><button class="text-xs text-muted" @click="clear">{{ t('aiAgent.clear') }}</button></div>
     <div class="scrollbar flex-1 space-y-3 overflow-auto p-3" :aria-busy="loading">
-      <p v-if="!chat?.messages.length && !loading && !scopeConfirmation" class="text-sm text-muted">{{ t('aiAgent.empty') }}</p>
-      <div v-for="(message, index) in chat?.messages || []" :key="index" class="rounded p-2 text-sm" :class="message.role === 'user' ? 'ml-4 bg-accent text-white' : 'bg-canvas'"><div class="whitespace-pre-wrap">{{ message.content }}</div><button v-if="message.role === 'assistant' && sqlFromResponse(message.content)" class="mt-2 block text-xs text-accent" @click="insert(message.content)">{{ t('aiAgent.insertSql') }}</button><p v-if="message.role === 'assistant' && message.executionTimeMs !== undefined" class="mt-2 text-right text-[11px] text-muted">{{ t('aiAgent.executionTime', { time: formatExecutionTime(message.executionTimeMs) }) }}</p></div>
+      <div v-if="!chat?.messages.length && !loading && !scopeConfirmation" class="space-y-2">
+        <p class="text-sm text-muted">{{ t('aiAgent.empty') }}</p>
+        <div class="flex flex-wrap gap-1.5">
+          <button v-for="starter in starterPrompts" :key="starter.label" type="button" class="starter-prompt" @click="useStarterPrompt(starter.prompt)">{{ starter.label }}</button>
+        </div>
+      </div>
+      <div v-for="(message, index) in chat?.messages || []" :key="index" v-show="message.role === 'user' || message.content" class="rounded p-2 text-sm" :class="message.role === 'user' ? 'ml-4 bg-accent text-white' : 'bg-canvas'"><div class="whitespace-pre-wrap">{{ message.content }}</div><button v-if="message.role === 'assistant' && sqlFromResponse(message.content)" class="mt-2 block text-xs text-accent" @click="insert(message.content)">{{ t('aiAgent.insertSql') }}</button><p v-if="message.role === 'assistant' && message.executionTimeMs !== undefined" class="mt-2 text-right text-[11px] text-muted">{{ t('aiAgent.executionTime', { time: formatExecutionTime(message.executionTimeMs) }) }}</p></div>
       <div v-if="scopeConfirmation" class="scope-confirmation"><p class="text-sm font-medium text-ink">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.confirmDatabases') : t('aiAgent.confirmTables') }}</p><div class="mt-2 flex flex-wrap gap-1"><span v-for="database in scopeConfirmation.step === 'databases' ? selectedDatabases : []" :key="database" class="scope-chip">{{ database }}</span><span v-for="table in scopeConfirmation.step === 'tables' ? selectedTables : []" :key="tableKey(table)" class="scope-chip">{{ table.database }}.{{ table.table }}</span></div><p class="mt-2 text-xs text-muted">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.confirmDatabasesHint') : t('aiAgent.confirmTablesHint') }}</p><div class="mt-3 grid grid-cols-2 gap-2"><button type="button" class="scope-confirm-primary" @click="scopeConfirmation.step === 'databases' ? confirmDatabases() : confirmTables()">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.useDatabases') : t('aiAgent.useTables') }}</button><button type="button" class="scope-confirm-secondary" @click="scopeConfirmation.step === 'databases' ? showDatabasePicker() : showTablePicker()">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.chooseOtherDatabases') : t('aiAgent.chooseOtherTables') }}</button></div><div v-if="confirmationPicker === 'databases'" class="scope-confirm-picker"><input v-model="databaseSearch" type="search" class="scope-search" :placeholder="t('aiAgent.searchDatabases')" autofocus ><p v-if="metadataLoading" class="scope-empty">{{ t('aiAgent.loadingScope') }}</p><label v-for="database in filteredDatabases" :key="database.name" class="scope-check"><input :checked="hasDatabase(database.name)" type="checkbox" @change="toggleDatabase(database.name)" ><span class="truncate">{{ database.name }}</span></label><p v-if="!metadataLoading && !filteredDatabases.length" class="scope-empty">{{ t('aiAgent.noMatches') }}</p></div><div v-else-if="confirmationPicker === 'tables'" class="scope-confirm-picker"><input v-model="tableSearch" type="search" class="scope-search" :placeholder="t('aiAgent.searchTables')" autofocus ><p v-if="metadataLoading" class="scope-empty">{{ t('aiAgent.loadingScope') }}</p><label v-for="table in filteredTables" :key="tableKey(table)" class="scope-check"><input :checked="hasTable(table)" type="checkbox" @change="toggleTable(table)" ><span class="truncate">{{ table.database }}.{{ table.table }}</span></label><p v-if="!metadataLoading && !filteredTables.length" class="scope-empty">{{ t('aiAgent.noMatches') }}</p></div></div>
       <div v-if="loading" class="flex items-center gap-2 rounded bg-canvas p-2 text-sm text-muted" role="status" aria-live="polite"><span class="h-2 w-2 animate-pulse rounded-full bg-accent" aria-hidden="true" /><span>{{ t('aiAgent.thinking') }}</span></div>
     </div>
@@ -302,6 +340,7 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 </template>
 
 <style scoped>
+.starter-prompt { @apply rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink hover:border-accent hover:text-accent; }
 .scope-option { @apply rounded border border-line px-2 py-1.5 text-left text-[11px] text-muted hover:bg-panel; }
 .scope-option-active { @apply border-accent bg-accent/10 font-medium text-accent; }
 .scope-picker { @apply flex w-full items-center justify-between gap-2 rounded border border-line bg-panel px-2 py-1.5 text-left text-xs text-ink disabled:cursor-not-allowed disabled:opacity-50; }

@@ -36,8 +36,8 @@ func (c Connection) Public(status string) ConnectionResponse {
 }
 
 type TransactionStatus struct {
-	Pending           bool `json:"pending"`
-	PendingStatements int  `json:"pendingStatements"`
+	Pending           bool                          `json:"pending"`
+	PendingStatements int                           `json:"pendingStatements"`
 	Statements        []PendingTransactionStatement `json:"statements"`
 }
 
@@ -242,12 +242,13 @@ type AIAuditLog struct {
 }
 
 type AIChatJob struct {
-	ID        string    `json:"id"`
-	Status    string    `json:"status"`
-	Message   string    `json:"message,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID             string    `json:"id"`
+	Status         string    `json:"status"`
+	Message        string    `json:"message,omitempty"`
+	PartialMessage string    `json:"partialMessage,omitempty"`
+	Error          string    `json:"error,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // SmartQuery is an AI-curated, read-only query template kept in the client

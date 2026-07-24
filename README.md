@@ -54,12 +54,13 @@ DBfock is currently distributed without Apple Developer ID notarization. If you 
 - Export results as CSV, JSON, and TSV.
 - Formatting, editor search, copy/paste actions, and productivity shortcuts.
 
-### AI for SQL
+### AI SQL Assistant
 
-- AI agent panel attached to SQL tabs.
+- AI assistant panel attached to SQL tabs: ask SQL/database questions, create queries, explain, review, debug, and improve existing SQL.
 - Providers: OpenAI, OpenRouter, Anthropic, and Ollama.
 - Model selection from the configured provider.
 - Optional use of the currently open editor query as context.
+- Responses stream into the chat as the provider generates them.
 - Configurable schema scope: all databases/tables or a manual selection.
 - Quick actions to explain SQL, improve SQL, and insert AI-generated SQL into the editor.
 - Smart Queries generated from filtered SELECT statements, with editable parameters for reuse without hand-editing SQL.

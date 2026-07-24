@@ -22,6 +22,30 @@ func TestScopeConfirmationMessageCarriesOnlySuggestedIdentifiers(t *testing.T) {
 	}
 }
 
+func TestAIDatabaseSelectionCanSkipLiveSchemaForGeneralSQLHelp(t *testing.T) {
+	var selection aiDatabaseSelection
+	if err := json.Unmarshal([]byte(`{"needsSchema":false,"databases":[]}`), &selection); err != nil {
+		t.Fatalf("decode selection: %v", err)
+	}
+	if !canAnswerWithoutAISchema(selection) {
+		t.Fatal("a schema-independent request should skip live schema discovery")
+	}
+	if canAnswerWithoutAISchema(aiDatabaseSelection{}) {
+		t.Fatal("an incomplete selection must retain the safe schema workflow")
+	}
+}
+
+func TestPartialAIGenerationShowsAnswerBeforeStreamCompletes(t *testing.T) {
+	partial := partialAIGeneration(`{"answer":"A query uses`)
+	if partial != "A query uses" {
+		t.Fatalf("partial answer = %q", partial)
+	}
+	withSQL := partialAIGeneration(`{"answer":"Use an index.","sql":"SELECT * FROM clientes"`)
+	if withSQL != "Use an index.\n\n```sql\nSELECT * FROM clientes" {
+		t.Fatalf("partial SQL response = %q", withSQL)
+	}
+}
+
 func TestProgressiveSelectionKeepsOnlyChosenSchema(t *testing.T) {
 	tables := []aiTableRef{{Database: "petshop", Table: "animais"}, {Database: "petshop", Table: "empresas"}, {Database: "petshop", Table: "vendas"}}
 	structures := map[aiTableRef]*models.TableStructure{

@@ -145,8 +145,20 @@ function currentExecutionBlock(): ExecutionBlock | undefined {
     const sql = props.modelValue.trim()
     return sql ? { from: 0, to: props.modelValue.length, sql } : undefined
   }
-  const cursor = view.state.selection.main.head
   const source = view.state.doc.toString()
+  const selection = view.state.selection.main
+  // An explicit selection always wins over the cursor block. This allows a
+  // multi-line query (including blank lines and UNIONs) to run as one unit.
+  if (!selection.empty) {
+    const raw = source.slice(selection.from, selection.to)
+    const leading = raw.search(/\S/)
+    if (leading < 0) return undefined
+    const trailing = raw.length - raw.trimEnd().length
+    const from = selection.from + leading
+    const to = selection.to - trailing
+    return { from, to, sql: source.slice(from, to) }
+  }
+  const cursor = selection.head
   const { from: start, to: end } = statementRange(source, cursor)
   const raw = source.slice(start, end)
   const leading = raw.search(/\S/)
@@ -258,8 +270,9 @@ function selectSearchMatch(index: number) {
   if (!view || !matches.length) { searchMatchIndex.value = -1; return }
   searchMatchIndex.value = (index + matches.length) % matches.length
   const from = matches[searchMatchIndex.value]!
-  const to = from + searchQuery.value.length
-  view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) })
+  // Do not turn a search result into the editor's selection. Otherwise the
+  // next character typed in the editor replaces the result that was found.
+  view.dispatch({ effects: EditorView.scrollIntoView(from, { y: 'center' }) })
 }
 function updateSearchHighlights() {
   if (!view) return
@@ -271,7 +284,19 @@ function updateSearch() {
   updateSearchHighlights()
   if (searchQuery.value) selectSearchMatch(0)
 }
-function focusSearch() { nextTick(() => searchInput.value?.focus()) }
+function focusSearch() {
+  if (view) {
+    const selection = view.state.selection.main
+    const selectedText = selection.empty ? '' : view.state.doc.sliceString(selection.from, selection.to)
+    if (selectedText) {
+      searchQuery.value = selectedText
+      if (searchInput.value) searchInput.value.value = selectedText
+      updateSearch()
+      updateSearchControls()
+    }
+  }
+  nextTick(() => searchInput.value?.focus())
+}
 function clearSearch() {
   searchQuery.value = ''
   searchMatchIndex.value = -1

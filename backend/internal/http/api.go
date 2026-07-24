@@ -37,12 +37,14 @@ type API struct {
 	querySlots  chan struct{}
 	ai          *ai.Service
 	backup      *backup.Service
+	aiSchemaMu  sync.Mutex
+	aiSchemas   map[string]cachedAISchema
 }
 
 var errDatabaseNotConnected = errors.New("connect to the database before running queries")
 
 func New(cfg config.Config, cs *connections.Service, providers *database.Registry, repo *repository.Repository, aiService *ai.Service, backupService *backup.Service, logger *slog.Logger) *API {
-	return &API{config: cfg, connections: cs, providers: providers, repo: repo, ai: aiService, backup: backupService, log: logger, sessions: map[string]bool{}, cancels: map[string]context.CancelFunc{}, querySlots: make(chan struct{}, cfg.MaxConcurrentQueries)}
+	return &API{config: cfg, connections: cs, providers: providers, repo: repo, ai: aiService, backup: backupService, log: logger, sessions: map[string]bool{}, cancels: map[string]context.CancelFunc{}, querySlots: make(chan struct{}, cfg.MaxConcurrentQueries), aiSchemas: map[string]cachedAISchema{}}
 }
 func (a *API) Router() http.Handler {
 	r := chi.NewRouter()
@@ -888,15 +890,16 @@ func (a *API) listAIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 type aiChatRequest struct {
-	ConnectionID      string          `json:"connectionId"`
-	Database          string          `json:"database"`
-	Prompt            string          `json:"prompt"`
-	History           []aiChatMessage `json:"history"`
-	DatabaseScope     string          `json:"databaseScope"`
-	SelectedDatabases []string        `json:"selectedDatabases"`
-	TableScope        string          `json:"tableScope"`
-	SelectedTables    []aiTableRef    `json:"selectedTables"`
-	ScopeConfirmation string          `json:"scopeConfirmation"`
+	ConnectionID        string          `json:"connectionId"`
+	Database            string          `json:"database"`
+	Prompt              string          `json:"prompt"`
+	History             []aiChatMessage `json:"history"`
+	DatabaseScope       string          `json:"databaseScope"`
+	SelectedDatabases   []string        `json:"selectedDatabases"`
+	TableScope          string          `json:"tableScope"`
+	SelectedTables      []aiTableRef    `json:"selectedTables"`
+	ScopeConfirmation   string          `json:"scopeConfirmation"`
+	FastSchemaRetrieval bool            `json:"fastSchemaRetrieval"`
 }
 
 // scopeConfirmationPrefix marks an internal response consumed by the chat UI.
@@ -1003,6 +1006,7 @@ type aiChatMessage struct {
 
 const (
 	maxAISelectedTables = 12
+	maxFastSchemaTables = 8
 	maxAIChatMessages   = 20
 	maxAIChatChars      = 16_000
 	// The workflow can make up to six provider requests. This is intentionally
@@ -1010,6 +1014,8 @@ const (
 	// cancel the final SQL validation.
 	aiWorkflowTimeout = 5 * time.Minute
 )
+
+const aiSchemaCacheTTL = 2 * time.Minute
 
 type aiTableRef struct {
 	Database string `json:"database"`
@@ -1051,6 +1057,12 @@ type aiValidation struct {
 	Valid  bool   `json:"valid"`
 	SQL    string `json:"sql"`
 	Answer string `json:"answer"`
+}
+
+type cachedAISchema struct {
+	expiresAt  time.Time
+	tables     []aiTableRef
+	structures map[aiTableRef]*models.TableStructure
 }
 
 const aiJSONOnly = "Return only valid JSON. Do not use Markdown, prose outside JSON, or identifiers that are not in the supplied list."
@@ -1243,6 +1255,194 @@ func availableRelationships(tables []aiTableRef, structures map[aiTableRef]*mode
 	return relationships
 }
 
+// aiSchemaCatalog reads complete schema metadata once per short cache window.
+// GetSchemaDiagram retrieves a database's tables, columns, and foreign keys in
+// batches, avoiding an LLM request for each discovery stage or a request per
+// table. The cache holds metadata only, never connection credentials or data.
+func (a *API) aiSchemaCatalog(ctx context.Context, c models.Connection, p database.Provider) (cachedAISchema, error) {
+	a.aiSchemaMu.Lock()
+	defer a.aiSchemaMu.Unlock()
+	if cached, ok := a.aiSchemas[c.ID]; ok && time.Now().Before(cached.expiresAt) {
+		return cached, nil
+	}
+
+	databases, err := p.ListDatabases(ctx, c)
+	if err != nil {
+		return cachedAISchema{}, fmt.Errorf("discover accessible databases: %w", err)
+	}
+	sort.Slice(databases, func(i, j int) bool { return databases[i].Name < databases[j].Name })
+	catalog := cachedAISchema{expiresAt: time.Now().Add(aiSchemaCacheTTL), tables: []aiTableRef{}, structures: map[aiTableRef]*models.TableStructure{}}
+	for _, databaseInfo := range databases {
+		diagram, diagramErr := p.GetSchemaDiagram(ctx, c, databaseInfo.Name)
+		if diagramErr != nil {
+			continue
+		}
+		for _, table := range diagram.Tables {
+			ref := aiTableRef{Database: databaseInfo.Name, Table: table.Name}
+			catalog.tables = append(catalog.tables, ref)
+			catalog.structures[ref] = &models.TableStructure{Columns: table.Columns, ForeignKeys: table.ForeignKeys}
+		}
+	}
+	if len(catalog.tables) == 0 {
+		return cachedAISchema{}, fmt.Errorf("no base tables were found in the accessible databases")
+	}
+	a.aiSchemas[c.ID] = catalog
+	return catalog, nil
+}
+
+func aiIdentifierTerms(value string) map[string]bool {
+	terms := map[string]bool{}
+	for _, token := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '$')
+	}) {
+		for _, term := range strings.Split(token, "_") {
+			if len(term) < 2 {
+				continue
+			}
+			terms[term] = true
+			if len(term) > 4 && strings.HasSuffix(term, "s") {
+				terms[strings.TrimSuffix(term, "s")] = true
+			}
+		}
+	}
+	return terms
+}
+
+func aiFastTableScore(promptTerms map[string]bool, table aiTableRef, structure *models.TableStructure) int {
+	if structure == nil {
+		return 0
+	}
+	score := 0
+	addNameScore := func(name string, exact, partial int) {
+		for term := range aiIdentifierTerms(name) {
+			if promptTerms[term] {
+				score += exact
+				continue
+			}
+			for promptTerm := range promptTerms {
+				if len(promptTerm) >= 4 && (strings.Contains(term, promptTerm) || strings.Contains(promptTerm, term)) {
+					score += partial
+					break
+				}
+			}
+		}
+	}
+	addNameScore(table.Database, 2, 1)
+	addNameScore(table.Table, 20, 4)
+	for _, column := range structure.Columns {
+		addNameScore(column.Name, 6, 1)
+	}
+	return score
+}
+
+func containsAITable(tables []aiTableRef, candidate aiTableRef) bool {
+	for _, table := range tables {
+		if table == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// fastSchemaTables performs deterministic retrieval over the locally cached
+// catalog. It considers database, table, and column names, then adds directly
+// connected tables so the one model call receives enough join context.
+func fastSchemaTables(catalog cachedAISchema, in aiChatRequest, preferredDatabase string) []aiTableRef {
+	available := catalog.tables
+	if in.DatabaseScope == "selected" {
+		allowed := requestedDatabases(in.SelectedDatabases, uniqueAIDatabases(available))
+		available = filterAITablesByDatabases(available, allowed)
+	}
+	if in.TableScope == "selected" {
+		return requestedTables(in.SelectedTables, available)
+	}
+	if len(available) == 0 {
+		return nil
+	}
+
+	type rankedTable struct {
+		table aiTableRef
+		score int
+	}
+	terms := aiIdentifierTerms(in.Prompt)
+	ranked := make([]rankedTable, 0, len(available))
+	for _, table := range available {
+		ranked = append(ranked, rankedTable{table: table, score: aiFastTableScore(terms, table, catalog.structures[table])})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		if ranked[i].table.Database != ranked[j].table.Database {
+			return ranked[i].table.Database < ranked[j].table.Database
+		}
+		return ranked[i].table.Table < ranked[j].table.Table
+	})
+
+	selected := make([]aiTableRef, 0, maxFastSchemaTables)
+	for _, item := range ranked {
+		if item.score <= 0 || len(selected) == maxFastSchemaTables {
+			break
+		}
+		selected = append(selected, item.table)
+	}
+	if len(selected) == 0 {
+		// No lexical match is a lower-confidence case. Prefer the active database
+		// rather than quietly broadening into an unrelated database.
+		for _, item := range ranked {
+			if sameAIName(item.table.Database, preferredDatabase) {
+				selected = append(selected, item.table)
+				if len(selected) == maxFastSchemaTables {
+					break
+				}
+			}
+		}
+	}
+	if len(selected) == 0 {
+		selected = append(selected, ranked[0].table)
+	}
+
+	for _, source := range catalog.tables {
+		structure := catalog.structures[source]
+		if structure == nil {
+			continue
+		}
+		for _, foreignKey := range structure.ForeignKeys {
+			target := aiTableRef{Database: source.Database, Table: foreignKey.ReferencedTable}
+			if (!containsAITable(selected, source) && !containsAITable(selected, target)) || !containsAITable(available, source) || !containsAITable(available, target) {
+				continue
+			}
+			if !containsAITable(selected, source) && len(selected) < maxAISelectedTables {
+				selected = append(selected, source)
+			}
+			if !containsAITable(selected, target) && len(selected) < maxAISelectedTables {
+				selected = append(selected, target)
+			}
+		}
+	}
+	return selected
+}
+
+func uniqueAIDatabases(tables []aiTableRef) []string {
+	databases := []string{}
+	for _, table := range tables {
+		if !containsAIName(databases, table.Database) {
+			databases = append(databases, table.Database)
+		}
+	}
+	return databases
+}
+
+func filterAITablesByDatabases(tables []aiTableRef, databases []string) []aiTableRef {
+	filtered := []aiTableRef{}
+	for _, table := range tables {
+		if containsAIName(databases, table.Database) {
+			filtered = append(filtered, table)
+		}
+	}
+	return filtered
+}
+
 func selectedRelationships(selection aiRelationshipSelection, available []aiRelationship) []aiRelationship {
 	selected := []aiRelationship{}
 	for _, candidate := range selection.Relationships {
@@ -1370,6 +1570,78 @@ func (a *API) runAIChatJob(id string, in aiChatRequest) {
 	}
 }
 
+var quotedAIIdentifierPattern = regexp.MustCompile("`([^`]+)`")
+
+func validateFastGeneratedSQL(statement string, tables []aiTableRef, structures map[aiTableRef]*models.TableStructure) error {
+	allowed := map[string]bool{}
+	for _, table := range tables {
+		allowed[strings.ToLower(table.Database)] = true
+		allowed[strings.ToLower(table.Table)] = true
+		for _, column := range structures[table].Columns {
+			allowed[strings.ToLower(column.Name)] = true
+		}
+	}
+	for _, match := range quotedAIIdentifierPattern.FindAllStringSubmatch(statement, -1) {
+		if !allowed[strings.ToLower(match[1])] {
+			return fmt.Errorf("generated SQL references an identifier outside the retrieved schema: %s", match[1])
+		}
+	}
+	return nil
+}
+
+func formatAIGeneration(generated aiGeneration) string {
+	answer := strings.TrimSpace(generated.Answer)
+	if strings.TrimSpace(generated.SQL) == "" {
+		return answer
+	}
+	if answer != "" {
+		answer += "\n\n"
+	}
+	return answer + "```sql\n" + strings.TrimSpace(generated.SQL) + "\n```"
+}
+
+// generateFastAIChat uses deterministic local schema retrieval plus one model
+// call. It is opt-in because a manually reviewed progressive workflow remains
+// valuable for ambiguous, unusually named schemas.
+func (a *API) generateFastAIChat(ctx context.Context, in aiChatRequest, setting models.AISetting, c models.Connection, p database.Provider, preferredDatabase string) (string, error) {
+	catalog, err := a.aiSchemaCatalog(ctx, c, p)
+	if err != nil {
+		return "", err
+	}
+	tables := fastSchemaTables(catalog, in, preferredDatabase)
+	if len(tables) == 0 {
+		return "", fmt.Errorf("no tables matched the selected schema scope")
+	}
+	structures := map[aiTableRef]*models.TableStructure{}
+	for _, table := range tables {
+		if structure := catalog.structures[table]; structure != nil {
+			structures[table] = structure
+		}
+	}
+	if len(structures) == 0 {
+		return "", fmt.Errorf("the retrieved tables do not expose schema details")
+	}
+	relationships := availableRelationships(tables, structures)
+	focusedSchema := aiColumnList(tables, structures, nil, relationships)
+	run, err := ai.NewAuditRun(in.Prompt)
+	if err != nil {
+		return "", err
+	}
+	system := "You generate safe MySQL SQL using only the retrieved schema. Table, column, and database names are literal identifiers: never translate, rename, normalize, or invent them. Use backticks around every database, table, and column identifier. If the request is informational and needs no SQL, leave sql empty. Answer in the user's language. " + aiJSONOnly
+	raw, err := a.ai.ChatWithAudit(ctx, setting, run, "fast_generate_sql", system, aiConversation(in.History, in.Prompt)+"\nRetrieved schema:"+focusedSchema+"\nJSON shape: {\"sql\":\"SQL only, without Markdown\",\"answer\":\"brief explanation\"}")
+	if err != nil {
+		return "", err
+	}
+	var generated aiGeneration
+	if !decodeAIJSON(raw, &generated) {
+		return "", fmt.Errorf("AI returned an invalid SQL generation response")
+	}
+	if err := validateFastGeneratedSQL(generated.SQL, tables, structures); err != nil {
+		return "", err
+	}
+	return formatAIGeneration(generated), nil
+}
+
 func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, error) {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return "", fmt.Errorf("prompt is required")
@@ -1390,6 +1662,9 @@ func (a *API) generateAIChat(ctx context.Context, in aiChatRequest) (string, err
 	databaseName := in.Database
 	if databaseName == "" {
 		databaseName = c.InitialDatabase
+	}
+	if in.FastSchemaRetrieval {
+		return a.generateFastAIChat(ctx, in, s, c, p, databaseName)
 	}
 	// Discovery is deliberately progressive: the model first sees database
 	// names, then only the selected tables, and only then their columns. This

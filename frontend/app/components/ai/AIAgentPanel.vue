@@ -11,6 +11,7 @@ function ensureChat(tabId = props.tabId) {
   const tab = workspace.tabs.find((item) => item.id === tabId)
   if (!tab) return undefined
   tab.aiChat ??= { draft: '', messages: [] }
+  tab.aiChat.fastSchemaRetrieval ??= false
   tab.aiChat.databaseScope ??= 'all'
   tab.aiChat.selectedDatabases ??= []
   tab.aiChat.tableScope ??= 'all'
@@ -31,6 +32,7 @@ const databaseSearch = ref('')
 const tableSearch = ref('')
 const databasePickerOpen = ref(false)
 const tablePickerOpen = ref(false)
+const confirmationPicker = ref<'databases' | 'tables'>()
 const schemaScopeCollapsed = ref(true)
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 const promptInput = ref<HTMLTextAreaElement>()
@@ -38,6 +40,10 @@ const hasEditorQuery = computed(() => Boolean(props.query?.trim()))
 const includeEditorQuery = computed({
   get: () => Boolean(chat.value?.includeEditorQuery),
   set: (value: boolean) => { if (chat.value) chat.value.includeEditorQuery = value },
+})
+const fastSchemaRetrieval = computed({
+  get: () => Boolean(chat.value?.fastSchemaRetrieval),
+  set: (value: boolean) => { if (chat.value) chat.value.fastSchemaRetrieval = value },
 })
 const selectedDatabases = computed(() => chat.value?.selectedDatabases || [])
 const selectedTables = computed(() => chat.value?.selectedTables || [])
@@ -77,6 +83,7 @@ function clear() {
   chat.value.draft = ''
   chat.value.messages = []
   chat.value.scopeConfirmation = undefined
+  confirmationPicker.value = undefined
   tab.aiJobId = undefined
   emit('status', props.tabId, 'complete')
 }
@@ -151,15 +158,11 @@ function parseScopeConfirmation(message: string): AIScopeConfirmation | undefine
   } catch { return undefined }
 }
 async function showTablePicker() {
-  schemaScopeCollapsed.value = false
-  databasePickerOpen.value = false
-  tablePickerOpen.value = true
+  confirmationPicker.value = 'tables'
   await loadSelectedTables()
 }
 function showDatabasePicker() {
-  schemaScopeCollapsed.value = false
-  tablePickerOpen.value = false
-  databasePickerOpen.value = true
+  confirmationPicker.value = 'databases'
   loadDatabases()
 }
 function toggleDatabasePicker() {
@@ -197,6 +200,7 @@ async function syncJob() {
     const targetChat = ensureChat(tabId)
     const confirmation = job.status === 'complete' ? parseScopeConfirmation(job.message || '') : undefined
     if (confirmation && targetChat) {
+      confirmationPicker.value = undefined
       targetChat.scopeConfirmation = confirmation
       targetChat.databaseScope = 'selected'
       targetChat.selectedDatabases = confirmation.databases
@@ -213,7 +217,7 @@ async function syncJob() {
     pollTimer = setTimeout(syncJob, 2000)
   }
 }
-type ScopeInput = { databaseScope: 'all' | 'selected'; selectedDatabases: string[]; tableScope: 'all' | 'selected'; selectedTables: AISchemaTable[]; scopeConfirmation?: 'databases' | 'tables' }
+type ScopeInput = { fastSchemaRetrieval: boolean; databaseScope: 'all' | 'selected'; selectedDatabases: string[]; tableScope: 'all' | 'selected'; selectedTables: AISchemaTable[]; scopeConfirmation?: 'databases' | 'tables' }
 async function submit(message: string, scope: ScopeInput, addUserMessage: boolean) {
   const text = message.trim()
   const tabId = props.tabId
@@ -242,21 +246,21 @@ async function submit(message: string, scope: ScopeInput, addUserMessage: boolea
   }
 }
 async function send(message = chat.value?.draft || '') {
-  await submit(message, { databaseScope: chat.value?.databaseScope || 'all', selectedDatabases: selectedDatabases.value, tableScope: chat.value?.tableScope || 'all', selectedTables: selectedTables.value }, true)
+  await submit(message, { fastSchemaRetrieval: fastSchemaRetrieval.value, databaseScope: chat.value?.databaseScope || 'all', selectedDatabases: selectedDatabases.value, tableScope: chat.value?.tableScope || 'all', selectedTables: selectedTables.value }, true)
 }
 async function confirmDatabases() {
   const confirmation = scopeConfirmation.value
   if (!confirmation) return
-  await submit(confirmation.prompt, { databaseScope: 'selected', selectedDatabases: selectedDatabases.value, tableScope: 'all', selectedTables: [], scopeConfirmation: 'databases' }, false)
+  await submit(confirmation.prompt, { fastSchemaRetrieval: false, databaseScope: 'selected', selectedDatabases: selectedDatabases.value, tableScope: 'all', selectedTables: [], scopeConfirmation: 'databases' }, false)
 }
 async function confirmTables() {
   const confirmation = scopeConfirmation.value
   if (!confirmation) return
-  await submit(confirmation.prompt, { databaseScope: 'selected', selectedDatabases: selectedDatabases.value, tableScope: 'selected', selectedTables: selectedTables.value, scopeConfirmation: 'tables' }, false)
+  await submit(confirmation.prompt, { fastSchemaRetrieval: false, databaseScope: 'selected', selectedDatabases: selectedDatabases.value, tableScope: 'selected', selectedTables: selectedTables.value, scopeConfirmation: 'tables' }, false)
 }
 function sqlFromResponse(text: string) { return text.match(/```sql\s*([\s\S]*?)```/i)?.[1]?.trim() }
 function insert(text: string) { const sql = sqlFromResponse(text); if (sql) emit('apply', sql) }
-watch(() => props.connectionId, () => { databases.value = []; tablesByDatabase.value = {}; metadataError.value = ''; databasePickerOpen.value = false; tablePickerOpen.value = false; if (chat.value) chat.value.scopeConfirmation = undefined; hydrateScopeMetadata() })
+watch(() => props.connectionId, () => { databases.value = []; tablesByDatabase.value = {}; metadataError.value = ''; databasePickerOpen.value = false; tablePickerOpen.value = false; confirmationPicker.value = undefined; if (chat.value) chat.value.scopeConfirmation = undefined; hydrateScopeMetadata() })
 defineExpose({ ask: send, pasteQuery })
 onMounted(async () => { await syncJob(); await hydrateScopeMetadata() })
 onBeforeUnmount(() => clearTimeout(pollTimer))
@@ -265,9 +269,18 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 <template>
   <aside class="flex min-w-80 shrink-0 flex-col border-l border-line bg-panel" :style="{ width: `${width ?? 50}%` }">
     <div class="flex justify-between border-b border-line p-3"><b class="text-sm">{{ t('aiAgent.title') }}</b><button class="text-xs text-muted" @click="clear">{{ t('aiAgent.clear') }}</button></div>
-    <div class="scrollbar flex-1 space-y-3 overflow-auto p-3" :aria-busy="loading"><p v-if="!chat?.messages.length && !loading && !scopeConfirmation" class="text-sm text-muted">{{ t('aiAgent.empty') }}</p><div v-for="(message, index) in chat?.messages || []" :key="index" class="rounded p-2 text-sm" :class="message.role === 'user' ? 'ml-4 bg-accent text-white' : 'bg-canvas'"><div class="whitespace-pre-wrap">{{ message.content }}</div><button v-if="message.role === 'assistant' && sqlFromResponse(message.content)" class="mt-2 block text-xs text-accent" @click="insert(message.content)">{{ t('aiAgent.insertSql') }}</button><p v-if="message.role === 'assistant' && message.executionTimeMs !== undefined" class="mt-2 text-right text-[11px] text-muted">{{ t('aiAgent.executionTime', { time: formatExecutionTime(message.executionTimeMs) }) }}</p></div><div v-if="scopeConfirmation" class="scope-confirmation"><p class="text-sm font-medium text-ink">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.confirmDatabases') : t('aiAgent.confirmTables') }}</p><div class="mt-2 flex flex-wrap gap-1"><span v-for="database in scopeConfirmation.step === 'databases' ? selectedDatabases : []" :key="database" class="scope-chip">{{ database }}</span><span v-for="table in scopeConfirmation.step === 'tables' ? selectedTables : []" :key="tableKey(table)" class="scope-chip">{{ table.database }}.{{ table.table }}</span></div><p class="mt-2 text-xs text-muted">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.confirmDatabasesHint') : t('aiAgent.confirmTablesHint') }}</p><div class="mt-3 grid grid-cols-2 gap-2"><button type="button" class="scope-confirm-primary" @click="scopeConfirmation.step === 'databases' ? confirmDatabases() : confirmTables()">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.useDatabases') : t('aiAgent.useTables') }}</button><button type="button" class="scope-confirm-secondary" @click="scopeConfirmation.step === 'databases' ? showDatabasePicker() : showTablePicker()">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.chooseOtherDatabases') : t('aiAgent.chooseOtherTables') }}</button></div></div><div v-if="loading" class="flex items-center gap-2 rounded bg-canvas p-2 text-sm text-muted" role="status" aria-live="polite"><span class="h-2 w-2 animate-pulse rounded-full bg-accent" aria-hidden="true" /><span>{{ t('aiAgent.thinking') }}</span></div></div>
+    <div class="scrollbar flex-1 space-y-3 overflow-auto p-3" :aria-busy="loading">
+      <p v-if="!chat?.messages.length && !loading && !scopeConfirmation" class="text-sm text-muted">{{ t('aiAgent.empty') }}</p>
+      <div v-for="(message, index) in chat?.messages || []" :key="index" class="rounded p-2 text-sm" :class="message.role === 'user' ? 'ml-4 bg-accent text-white' : 'bg-canvas'"><div class="whitespace-pre-wrap">{{ message.content }}</div><button v-if="message.role === 'assistant' && sqlFromResponse(message.content)" class="mt-2 block text-xs text-accent" @click="insert(message.content)">{{ t('aiAgent.insertSql') }}</button><p v-if="message.role === 'assistant' && message.executionTimeMs !== undefined" class="mt-2 text-right text-[11px] text-muted">{{ t('aiAgent.executionTime', { time: formatExecutionTime(message.executionTimeMs) }) }}</p></div>
+      <div v-if="scopeConfirmation" class="scope-confirmation"><p class="text-sm font-medium text-ink">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.confirmDatabases') : t('aiAgent.confirmTables') }}</p><div class="mt-2 flex flex-wrap gap-1"><span v-for="database in scopeConfirmation.step === 'databases' ? selectedDatabases : []" :key="database" class="scope-chip">{{ database }}</span><span v-for="table in scopeConfirmation.step === 'tables' ? selectedTables : []" :key="tableKey(table)" class="scope-chip">{{ table.database }}.{{ table.table }}</span></div><p class="mt-2 text-xs text-muted">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.confirmDatabasesHint') : t('aiAgent.confirmTablesHint') }}</p><div class="mt-3 grid grid-cols-2 gap-2"><button type="button" class="scope-confirm-primary" @click="scopeConfirmation.step === 'databases' ? confirmDatabases() : confirmTables()">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.useDatabases') : t('aiAgent.useTables') }}</button><button type="button" class="scope-confirm-secondary" @click="scopeConfirmation.step === 'databases' ? showDatabasePicker() : showTablePicker()">{{ scopeConfirmation.step === 'databases' ? t('aiAgent.chooseOtherDatabases') : t('aiAgent.chooseOtherTables') }}</button></div><div v-if="confirmationPicker === 'databases'" class="scope-confirm-picker"><input v-model="databaseSearch" type="search" class="scope-search" :placeholder="t('aiAgent.searchDatabases')" autofocus ><p v-if="metadataLoading" class="scope-empty">{{ t('aiAgent.loadingScope') }}</p><label v-for="database in filteredDatabases" :key="database.name" class="scope-check"><input :checked="hasDatabase(database.name)" type="checkbox" @change="toggleDatabase(database.name)" ><span class="truncate">{{ database.name }}</span></label><p v-if="!metadataLoading && !filteredDatabases.length" class="scope-empty">{{ t('aiAgent.noMatches') }}</p></div><div v-else-if="confirmationPicker === 'tables'" class="scope-confirm-picker"><input v-model="tableSearch" type="search" class="scope-search" :placeholder="t('aiAgent.searchTables')" autofocus ><p v-if="metadataLoading" class="scope-empty">{{ t('aiAgent.loadingScope') }}</p><label v-for="table in filteredTables" :key="tableKey(table)" class="scope-check"><input :checked="hasTable(table)" type="checkbox" @change="toggleTable(table)" ><span class="truncate">{{ table.database }}.{{ table.table }}</span></label><p v-if="!metadataLoading && !filteredTables.length" class="scope-empty">{{ t('aiAgent.noMatches') }}</p></div></div>
+      <div v-if="loading" class="flex items-center gap-2 rounded bg-canvas p-2 text-sm text-muted" role="status" aria-live="polite"><span class="h-2 w-2 animate-pulse rounded-full bg-accent" aria-hidden="true" /><span>{{ t('aiAgent.thinking') }}</span></div>
+    </div>
     <form class="border-t border-line p-3" @submit.prevent="send()">
-      <div class="mb-3 rounded border border-line bg-canvas p-2">
+      <textarea ref="promptInput" :value="chat?.draft || ''" class="h-20 w-full rounded border border-line bg-canvas p-2 text-sm" :placeholder="t('aiAgent.placeholder')" @input="setDraft(($event.target as HTMLTextAreaElement).value)" @keydown.enter.exact.prevent="send()" />
+      <p class="mt-1 text-[11px] text-muted">{{ t('aiAgent.enterHint') }}</p>
+      <label v-if="hasEditorQuery" class="mt-2 flex cursor-pointer items-center gap-2 text-xs text-muted"><input v-model="includeEditorQuery" type="checkbox" class="accent-accent" >{{ t('aiAgent.includeEditorQuery') }}</label>
+      <label class="mt-2 flex cursor-pointer items-center gap-2 text-xs text-muted" :title="t('aiAgent.fastSchemaRetrievalHint')"><input v-model="fastSchemaRetrieval" type="checkbox" class="accent-accent" >{{ t('aiAgent.fastSchemaRetrieval') }}</label>
+      <div class="mb-3 mt-3 rounded border border-line bg-canvas p-2">
         <button type="button" class="flex w-full items-center justify-between text-left text-xs font-medium text-ink" :aria-expanded="!schemaScopeCollapsed" aria-controls="schema-scope" @click="schemaScopeCollapsed = !schemaScopeCollapsed"><span>{{ t('aiAgent.schemaScope') }}</span><Icon name="lucide:chevron-down" class="h-3.5 w-3.5 transition-transform" :class="schemaScopeCollapsed ? '' : 'rotate-180'" aria-hidden="true" /></button>
         <div v-show="!schemaScopeCollapsed" id="schema-scope" class="mt-2 space-y-2">
         <div class="space-y-1.5">
@@ -283,9 +296,6 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
         <p v-if="metadataError" class="text-xs text-rose-500">{{ metadataError }}</p>
         </div>
       </div>
-      <textarea ref="promptInput" :value="chat?.draft || ''" class="h-20 w-full rounded border border-line bg-canvas p-2 text-sm" :placeholder="t('aiAgent.placeholder')" @input="setDraft(($event.target as HTMLTextAreaElement).value)" @keydown.enter.exact.prevent="send()" />
-      <p class="mt-1 text-[11px] text-muted">{{ t('aiAgent.enterHint') }}</p>
-      <label v-if="hasEditorQuery" class="mt-2 flex cursor-pointer items-center gap-2 text-xs text-muted"><input v-model="includeEditorQuery" type="checkbox" class="accent-accent" >{{ t('aiAgent.includeEditorQuery') }}</label>
       <button class="mt-2 w-full rounded bg-accent py-2 text-sm text-white disabled:opacity-50" :disabled="loading">{{ loading ? t('aiAgent.thinking') : t('aiAgent.ask') }}</button>
     </form>
   </aside>
@@ -300,6 +310,7 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .scope-check { @apply flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-ink hover:bg-canvas; }
 .scope-empty { @apply px-2 py-1.5 text-xs text-muted; }
 .scope-confirmation { @apply rounded border border-accent/40 bg-accent/5 p-3; }
+.scope-confirm-picker { @apply mt-3 max-h-52 overflow-auto rounded border border-line bg-panel p-1; }
 .scope-chip { @apply max-w-full truncate rounded bg-panel px-2 py-1 text-xs text-ink; }
 .scope-confirm-primary { @apply rounded bg-accent px-2 py-1.5 text-xs font-medium text-white hover:opacity-90; }
 .scope-confirm-secondary { @apply rounded border border-line bg-panel px-2 py-1.5 text-xs text-ink hover:bg-canvas; }

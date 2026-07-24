@@ -90,6 +90,49 @@ func TestAIConversationKeepsTheCurrentTabsPriorMessages(t *testing.T) {
 	}
 }
 
+func TestFastSchemaTablesUsesLocalNamesAndForeignKeys(t *testing.T) {
+	cliente := aiTableRef{Database: "crm", Table: "clientes"}
+	fatura := aiTableRef{Database: "crm", Table: "faturas"}
+	auditoria := aiTableRef{Database: "crm", Table: "auditoria"}
+	catalog := cachedAISchema{
+		tables: []aiTableRef{auditoria, cliente, fatura},
+		structures: map[aiTableRef]*models.TableStructure{
+			cliente:   {Columns: []models.ColumnInfo{{Name: "id"}, {Name: "nome"}}},
+			fatura:    {Columns: []models.ColumnInfo{{Name: "id"}, {Name: "cliente_id"}, {Name: "valor"}}, ForeignKeys: []models.ForeignKeyInfo{{Column: "cliente_id", ReferencedTable: "clientes", ReferencedColumn: "id"}}},
+			auditoria: {Columns: []models.ColumnInfo{{Name: "evento"}}},
+		},
+	}
+
+	selected := fastSchemaTables(catalog, aiChatRequest{Prompt: "liste as faturas por cliente"}, "crm")
+	if !containsAITable(selected, fatura) || !containsAITable(selected, cliente) {
+		t.Fatalf("fast retrieval did not include the matching table and join target: %#v", selected)
+	}
+	if containsAITable(selected, auditoria) {
+		t.Fatalf("fast retrieval included unrelated table: %#v", selected)
+	}
+}
+
+func TestFastSchemaTablesRespectsManualTableScope(t *testing.T) {
+	first := aiTableRef{Database: "crm", Table: "clientes"}
+	second := aiTableRef{Database: "crm", Table: "faturas"}
+	catalog := cachedAISchema{tables: []aiTableRef{first, second}, structures: map[aiTableRef]*models.TableStructure{first: {Columns: []models.ColumnInfo{{Name: "id"}}}, second: {Columns: []models.ColumnInfo{{Name: "id"}}}}}
+	selected := fastSchemaTables(catalog, aiChatRequest{TableScope: "selected", SelectedTables: []aiTableRef{second}}, "crm")
+	if len(selected) != 1 || selected[0] != second {
+		t.Fatalf("manual table scope was not preserved: %#v", selected)
+	}
+}
+
+func TestValidateFastGeneratedSQLRejectsUnknownQuotedIdentifier(t *testing.T) {
+	table := aiTableRef{Database: "crm", Table: "clientes"}
+	structures := map[aiTableRef]*models.TableStructure{table: {Columns: []models.ColumnInfo{{Name: "id"}, {Name: "nome"}}}}
+	if err := validateFastGeneratedSQL("SELECT `nome` FROM `crm`.`clientes`", []aiTableRef{table}, structures); err != nil {
+		t.Fatalf("known identifiers were rejected: %v", err)
+	}
+	if err := validateFastGeneratedSQL("SELECT `email` FROM `crm`.`clientes`", []aiTableRef{table}, structures); err == nil {
+		t.Fatal("unknown identifier was accepted")
+	}
+}
+
 func TestSmartQueryRecognizesINFilter(t *testing.T) {
 	sql := "SELECT *\nFROM geral.EMPRESA_GRL eg\nWHERE eg.ID_EMPRESA_EPGL in (16767)"
 	if !smartQueryWherePattern.MatchString(sql) {

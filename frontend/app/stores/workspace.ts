@@ -28,6 +28,7 @@ function isAIAgentChat(value: unknown): value is AIAgentChat {
   return typeof candidate.draft === 'string'
     && Array.isArray(candidate.messages)
     && (candidate.includeEditorQuery === undefined || typeof candidate.includeEditorQuery === 'boolean')
+    && (candidate.fastSchemaRetrieval === undefined || typeof candidate.fastSchemaRetrieval === 'boolean')
     && candidate.messages.every((message) => message && typeof message === 'object' && (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string')
 }
 

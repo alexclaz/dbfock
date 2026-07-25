@@ -173,8 +173,9 @@ For a one-command install on macOS or Linux, run this from a terminal:
 curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | bash
 ```
 
-It downloads a temporary copy of the source, verifies whether Go 1.24+ and
-Node.js 24+ are available, and asks before installing any missing dependency.
+It downloads a temporary copy of the source, accepts Go 1.20+ (which downloads
+the project's Go 1.24 toolchain automatically) and verifies Node.js 24+.
+It asks before installing any missing dependency.
 On Linux it also asks before installing the GTK/WebKit build requirements. Use
 `DBFOCK_YES=1` only when you want to approve those dependency installs without
 prompts. The non-interactive form is `curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | DBFOCK_YES=1 bash`.

@@ -23,7 +23,7 @@ confirm() {
 }
 
 go_is_current() {
-  command -v go >/dev/null 2>&1 && go env GOVERSION 2>/dev/null | grep -Eq '^go1\.(2[4-9]|[3-9][0-9])\.'
+  command -v go >/dev/null 2>&1 && go env GOVERSION 2>/dev/null | grep -Eq '^go1\.(2[0-9]|[3-9][0-9])\.'
 }
 
 node_is_current() {
@@ -38,7 +38,7 @@ install_go() {
     *) fail "Unsupported Linux architecture: $(uname -m)." ;;
   esac
 
-  confirm 'Go 1.24+ is required. Install the current stable Go release for this user?' || fail 'Go is required to build DBfock.'
+  confirm 'Go 1.20+ is required to download the project toolchain. Install the current stable Go release for this user?' || fail 'Go is required to build DBfock.'
   release="$(curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error 'https://go.dev/dl/?mode=json')"
   archive="$(printf '%s\n' "$release" | grep -oE "\"filename\": ?\"go[0-9.]+\.linux-${architecture}\.tar\.gz\"" | head -n 1 | cut -d '"' -f 4 || true)"
   [[ -n "$archive" ]] || fail 'Could not find a stable Go download for this architecture.'
@@ -112,7 +112,8 @@ install_linux_build_dependencies() {
 command -v curl >/dev/null 2>&1 || fail 'curl is required to install missing build tools.'
 
 go_is_current || install_go
-go_is_current || fail "Go 1.24+ is required (found $(go version 2>/dev/null || printf 'none'))."
+go_is_current || fail "Go 1.20+ is required (found $(go version 2>/dev/null || printf 'none'))."
+export GOTOOLCHAIN=auto
 
 node_is_current || install_node
 node_is_current || fail "Node.js 24+ is required (found $(node --version 2>/dev/null || printf 'none'))."

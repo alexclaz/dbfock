@@ -48,10 +48,10 @@ ensure_go() {
     go_version="$(go env GOVERSION 2>/dev/null || true)"
   fi
 
-  if [[ ! "$go_version" =~ ^go1\.(2[4-9]|[3-9][0-9])\. ]]; then
+  if [[ ! "$go_version" =~ ^go1\.(2[0-9]|[3-9][0-9])\. ]]; then
     ensure_brew
-    confirm 'Go 1.24+ is required. Install it with Homebrew?' || fail 'Go is required to build DBfock.'
-    printf 'Installing Go 1.24+ with Homebrew...\n'
+    confirm 'Go 1.20+ is required to download the project toolchain. Install Go with Homebrew?' || fail 'Go is required to build DBfock.'
+    printf 'Installing Go with Homebrew...\n'
     HOMEBREW_NO_INSTALL_CLEANUP=1 brew install go
     installed_with_brew=true
   fi
@@ -60,7 +60,8 @@ ensure_go() {
     export PATH="$(brew --prefix go)/bin:$PATH"
   fi
   go_version="$(go env GOVERSION)"
-  [[ "$go_version" =~ ^go1\.(2[4-9]|[3-9][0-9])\. ]] || fail "Go 1.24+ is required (found $go_version)."
+  [[ "$go_version" =~ ^go1\.(2[0-9]|[3-9][0-9])\. ]] || fail "Go 1.20+ is required (found $go_version)."
+  export GOTOOLCHAIN=auto
 }
 
 ensure_node() {

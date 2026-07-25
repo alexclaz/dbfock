@@ -97,6 +97,10 @@ func (a *API) Router() http.Handler {
 				r.Get("/stats", a.connectionStats)
 				r.Get("/metadata/{section}", a.connectionMetadata)
 				r.Get("/databases", a.listDatabases)
+				r.Get("/users", a.listDatabaseUsers)
+				r.Post("/users", a.createDatabaseUser)
+				r.Put("/users/{username}/{host}", a.updateDatabaseUser)
+				r.Delete("/users/{username}/{host}", a.deleteDatabaseUser)
 				r.Get("/databases/{database}/tables", a.listTables)
 				r.Get("/databases/{database}/views", a.listViews)
 				r.Get("/databases/{database}/diagram", a.schemaDiagram)
@@ -365,6 +369,89 @@ func (a *API) connectionMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, metadata)
+}
+func (a *API) databaseUserManager(w http.ResponseWriter, r *http.Request) (models.Connection, database.UserManager, bool) {
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return models.Connection{}, nil, false
+	}
+	if err := a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return models.Connection{}, nil, false
+	}
+	p, err := a.providers.Get(c.Driver)
+	if err != nil {
+		fail(w, err)
+		return models.Connection{}, nil, false
+	}
+	manager, ok := p.(database.UserManager)
+	if !ok {
+		fail(w, fmt.Errorf("user management is not supported by %s", c.Driver))
+		return models.Connection{}, nil, false
+	}
+	return c, manager, true
+}
+func (a *API) listDatabaseUsers(w http.ResponseWriter, r *http.Request) {
+	c, manager, ok := a.databaseUserManager(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	users, err := manager.ListUsers(ctx, c)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, users)
+}
+func (a *API) createDatabaseUser(w http.ResponseWriter, r *http.Request) {
+	var input models.DatabaseUserInput
+	if err := decode(w, r, &input); err != nil {
+		return
+	}
+	c, manager, ok := a.databaseUserManager(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	if err := manager.CreateUser(ctx, c, input); err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+func (a *API) updateDatabaseUser(w http.ResponseWriter, r *http.Request) {
+	var input models.DatabaseUserInput
+	if err := decode(w, r, &input); err != nil {
+		return
+	}
+	c, manager, ok := a.databaseUserManager(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	if err := manager.UpdateUser(ctx, c, chi.URLParam(r, "username"), chi.URLParam(r, "host"), input); err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]bool{"ok": true})
+}
+func (a *API) deleteDatabaseUser(w http.ResponseWriter, r *http.Request) {
+	c, manager, ok := a.databaseUserManager(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	if err := manager.DeleteUser(ctx, c, chi.URLParam(r, "username"), chi.URLParam(r, "host")); err != nil {
+		fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (a *API) metadata(w http.ResponseWriter, r *http.Request, fn func(context.Context, database.Provider, models.Connection) (any, error)) {
 	c, err := a.connection(r.Context())

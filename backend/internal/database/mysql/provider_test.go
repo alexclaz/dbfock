@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/dbfock/database-manager/backend/internal/models"
 	_ "modernc.org/sqlite"
 )
 
@@ -99,5 +101,30 @@ func TestLimitSelectRowsStillCapsAnInnerLimit(t *testing.T) {
 	want := "SELECT * FROM (SELECT * FROM (SELECT id FROM users LIMIT 10) AS recent) AS `dbfock_result` LIMIT 201"
 	if got := limitSelectRows(statement, 200); got != want {
 		t.Fatalf("limitSelectRows() = %q, want %q", got, want)
+	}
+}
+
+func TestUserManagementStatementsValidateAccountAndPrivileges(t *testing.T) {
+	account, err := mysqlAccount("app_user", "%")
+	if err != nil || account != "'app_user'@'%'" {
+		t.Fatalf("mysqlAccount() = %q, %v", account, err)
+	}
+	if _, err := mysqlAccount("user'; DROP USER root", "%"); err == nil {
+		t.Fatal("mysqlAccount() accepted an unsafe username")
+	}
+	statements, err := grantStatements(account, models.DatabaseUserInput{Databases: []string{"app", "audit"}, Privileges: []string{"select", "UPDATE", "SELECT"}})
+	if err != nil {
+		t.Fatalf("grantStatements() error = %v", err)
+	}
+	want := []string{"GRANT SELECT, UPDATE ON `app`.* TO 'app_user'@'%'", "GRANT SELECT, UPDATE ON `audit`.* TO 'app_user'@'%'"}
+	if !reflect.DeepEqual(statements, want) {
+		t.Fatalf("grantStatements() = %q, want %q", statements, want)
+	}
+	statements, err = grantStatements(account, models.DatabaseUserInput{Privileges: []string{"ALL PRIVILEGES"}})
+	if err != nil || !reflect.DeepEqual(statements, []string{"GRANT ALL PRIVILEGES ON *.* TO 'app_user'@'%'"}) {
+		t.Fatalf("grantStatements() all privileges = %q, %v", statements, err)
+	}
+	if _, err := grantStatements(account, models.DatabaseUserInput{Privileges: []string{"SUPER"}}); err == nil {
+		t.Fatal("grantStatements() accepted an unsupported privilege")
 	}
 }

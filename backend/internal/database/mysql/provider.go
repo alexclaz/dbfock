@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,10 @@ func (p *Provider) open(c models.Connection) (*sql.DB, error) {
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
 	cfg.AllowNativePasswords = true
+	// MySQL does not accept server-side parameter markers in CREATE/ALTER USER
+	// authentication clauses. The driver safely expands those values before the
+	// request is sent, so account passwords remain parameterized at this layer.
+	cfg.InterpolateParams = true
 	if c.SSLEnabled {
 		cfg.TLSConfig = "preferred"
 	}
@@ -93,6 +98,213 @@ func (p *Provider) ListDatabases(ctx context.Context, c models.Connection) (out 
 		return rows.Err()
 	})
 	return
+}
+
+var supportedUserPrivileges = map[string]bool{
+	"ALL PRIVILEGES": true,
+	"SELECT":         true, "INSERT": true, "UPDATE": true, "DELETE": true,
+	"CREATE": true, "ALTER": true, "DROP": true, "INDEX": true,
+	"REFERENCES": true, "EXECUTE": true, "CREATE VIEW": true,
+	"SHOW VIEW": true, "TRIGGER": true,
+}
+
+var validMySQLUsername = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
+var validMySQLHost = regexp.MustCompile(`^[A-Za-z0-9.%_:-]+$`)
+
+func mysqlAccount(username, host string) (string, error) {
+	if !validMySQLUsername.MatchString(username) || len(username) > 32 {
+		return "", fmt.Errorf("username must contain between 1 and 32 characters")
+	}
+	if !validMySQLHost.MatchString(host) || len(host) > 255 {
+		return "", fmt.Errorf("host must contain between 1 and 255 characters")
+	}
+	return "'" + username + "'@'" + host + "'", nil
+}
+
+func userPrivileges(input models.DatabaseUserInput) ([]string, error) {
+	if len(input.Privileges) == 0 {
+		return nil, fmt.Errorf("select at least one privilege")
+	}
+	seen := map[string]bool{}
+	privileges := make([]string, 0, len(input.Privileges))
+	for _, privilege := range input.Privileges {
+		privilege = strings.ToUpper(strings.TrimSpace(privilege))
+		if !supportedUserPrivileges[privilege] {
+			return nil, fmt.Errorf("unsupported privilege: %s", privilege)
+		}
+		if !seen[privilege] {
+			seen[privilege] = true
+			privileges = append(privileges, privilege)
+		}
+	}
+	if seen["ALL PRIVILEGES"] {
+		if len(privileges) != 1 {
+			return nil, fmt.Errorf("ALL PRIVILEGES cannot be combined with individual privileges")
+		}
+		return privileges, nil
+	}
+	if len(privileges) == len(supportedUserPrivileges)-1 {
+		return []string{"ALL PRIVILEGES"}, nil
+	}
+	sort.Strings(privileges)
+	return privileges, nil
+}
+
+func privilegeScopes(input models.DatabaseUserInput) ([]string, error) {
+	databases := input.Databases
+	if len(databases) == 0 && strings.TrimSpace(input.Database) != "" {
+		databases = []string{input.Database}
+	}
+	if len(databases) == 0 {
+		return []string{"*.*"}, nil
+	}
+	seen := map[string]bool{}
+	scopes := make([]string, 0, len(databases))
+	for _, databaseName := range databases {
+		if seen[databaseName] {
+			continue
+		}
+		quoted, err := database.QuoteIdentifier(databaseName)
+		if err != nil {
+			return nil, err
+		}
+		seen[databaseName] = true
+		scopes = append(scopes, quoted+".*")
+	}
+	if len(scopes) == 0 {
+		return []string{"*.*"}, nil
+	}
+	return scopes, nil
+}
+
+func grantStatements(account string, input models.DatabaseUserInput) ([]string, error) {
+	privileges, err := userPrivileges(input)
+	if err != nil {
+		return nil, err
+	}
+	scopes, err := privilegeScopes(input)
+	if err != nil {
+		return nil, err
+	}
+	statements := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		statements = append(statements, "GRANT "+strings.Join(privileges, ", ")+" ON "+scope+" TO "+account)
+	}
+	return statements, nil
+}
+
+func (p *Provider) ListUsers(ctx context.Context, c models.Connection) (out []models.DatabaseUser, err error) {
+	out = make([]models.DatabaseUser, 0)
+	err = p.withDB(c, func(db *sql.DB) error {
+		rows, queryErr := db.QueryContext(ctx, "SELECT user, host, plugin, account_locked, password_expired FROM mysql.user ORDER BY user, host")
+		if queryErr != nil {
+			return queryErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item models.DatabaseUser
+			var locked, expired string
+			if scanErr := rows.Scan(&item.Username, &item.Host, &item.AuthPlugin, &locked, &expired); scanErr != nil {
+				return scanErr
+			}
+			item.Locked = locked == "Y"
+			item.PasswordExpired = expired == "Y"
+			out = append(out, item)
+		}
+		if queryErr = rows.Err(); queryErr != nil {
+			return queryErr
+		}
+		rows.Close()
+		for i := range out {
+			account, accountErr := mysqlAccount(out[i].Username, out[i].Host)
+			if accountErr != nil {
+				return accountErr
+			}
+			grants, grantErr := db.QueryContext(ctx, "SHOW GRANTS FOR "+account)
+			if grantErr != nil {
+				return grantErr
+			}
+			for grants.Next() {
+				var grant string
+				if scanErr := grants.Scan(&grant); scanErr != nil {
+					grants.Close()
+					return scanErr
+				}
+				out[i].Grants = append(out[i].Grants, grant)
+			}
+			if grantErr = grants.Err(); grantErr != nil {
+				grants.Close()
+				return grantErr
+			}
+			grants.Close()
+		}
+		return nil
+	})
+	return
+}
+
+func (p *Provider) CreateUser(ctx context.Context, c models.Connection, input models.DatabaseUserInput) error {
+	if input.Password == "" {
+		return fmt.Errorf("password is required")
+	}
+	account, err := mysqlAccount(input.Username, input.Host)
+	if err != nil {
+		return err
+	}
+	grants, err := grantStatements(account, input)
+	if err != nil {
+		return err
+	}
+	return p.withDB(c, func(db *sql.DB) error {
+		if _, execErr := db.ExecContext(ctx, "CREATE USER "+account+" IDENTIFIED BY ?", input.Password); execErr != nil {
+			return execErr
+		}
+		for _, grant := range grants {
+			if _, execErr := db.ExecContext(ctx, grant); execErr != nil {
+				_, _ = db.ExecContext(context.Background(), "DROP USER "+account)
+				return execErr
+			}
+		}
+		return nil
+	})
+}
+
+func (p *Provider) UpdateUser(ctx context.Context, c models.Connection, username, host string, input models.DatabaseUserInput) error {
+	account, err := mysqlAccount(username, host)
+	if err != nil {
+		return err
+	}
+	grants, err := grantStatements(account, input)
+	if err != nil {
+		return err
+	}
+	return p.withDB(c, func(db *sql.DB) error {
+		if input.Password != "" {
+			if _, execErr := db.ExecContext(ctx, "ALTER USER "+account+" IDENTIFIED BY ?", input.Password); execErr != nil {
+				return execErr
+			}
+		}
+		if _, execErr := db.ExecContext(ctx, "REVOKE ALL PRIVILEGES, GRANT OPTION FROM "+account); execErr != nil {
+			return execErr
+		}
+		for _, grant := range grants {
+			if _, execErr := db.ExecContext(ctx, grant); execErr != nil {
+				return execErr
+			}
+		}
+		return nil
+	})
+}
+
+func (p *Provider) DeleteUser(ctx context.Context, c models.Connection, username, host string) error {
+	account, err := mysqlAccount(username, host)
+	if err != nil {
+		return err
+	}
+	return p.withDB(c, func(db *sql.DB) error {
+		_, execErr := db.ExecContext(ctx, "DROP USER "+account)
+		return execErr
+	})
 }
 func (p *Provider) ListTables(ctx context.Context, c models.Connection, dbName string, views bool) (out []models.TableInfo, err error) {
 	out = make([]models.TableInfo, 0)

@@ -117,6 +117,29 @@ type MetadataTable struct {
 type DatabaseInfo struct {
 	Name string `json:"name"`
 }
+
+// DatabaseUser is a MySQL account available to the connection. An account is
+// identified by both its username and allowed host.
+type DatabaseUser struct {
+	Username        string   `json:"username"`
+	Host            string   `json:"host"`
+	AuthPlugin      string   `json:"authPlugin"`
+	Locked          bool     `json:"locked"`
+	PasswordExpired bool     `json:"passwordExpired"`
+	Grants          []string `json:"grants"`
+}
+
+// DatabaseUserInput contains the mutable details of a MySQL account. The
+// database field scopes its privileges; an empty value means every database.
+type DatabaseUserInput struct {
+	Username   string   `json:"username"`
+	Host       string   `json:"host"`
+	Password   string   `json:"password,omitempty"`
+	Privileges []string `json:"privileges"`
+	Databases  []string `json:"databases"`
+	// Database is retained while older clients transition to databases.
+	Database string `json:"database,omitempty"`
+}
 type TableInfo struct {
 	Name        string `json:"name"`
 	Type        string `json:"type"`

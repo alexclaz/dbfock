@@ -50,6 +50,15 @@ type RowUpdater interface {
 	UpdateRowInTransaction(context.Context, models.Connection, string, string, map[string]any, map[string]any) (*models.QueryResult, error)
 }
 
+// UserManager is implemented by providers that support native database-account
+// management. It is deliberately optional because not every driver exposes it.
+type UserManager interface {
+	ListUsers(context.Context, models.Connection) ([]models.DatabaseUser, error)
+	CreateUser(context.Context, models.Connection, models.DatabaseUserInput) error
+	UpdateUser(context.Context, models.Connection, string, string, models.DatabaseUserInput) error
+	DeleteUser(context.Context, models.Connection, string, string) error
+}
+
 type Registry struct{ providers map[string]Provider }
 
 func NewRegistry() *Registry                                  { return &Registry{providers: map[string]Provider{}} }

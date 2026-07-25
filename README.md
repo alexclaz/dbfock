@@ -167,6 +167,43 @@ To build the app:
 make build-desktop
 ```
 
+For a one-command install on macOS or Linux, run this from a terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | bash
+```
+
+It downloads a temporary copy of the source, verifies whether Go 1.24+ and
+Node.js 24+ are available, and asks before installing any missing dependency.
+On Linux it also asks before installing the GTK/WebKit build requirements. Use
+`DBFOCK_YES=1` only when you want to approve those dependency installs without
+prompts. The non-interactive form is `curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | DBFOCK_YES=1 bash`.
+
+On macOS, the app is installed in `/Applications`. The installer uses a locally
+installed `Developer ID Application` certificate, falling back to `Apple
+Development` for local use. An Apple Developer Program membership alone is not
+a certificate: create and install it in Keychain Access first. Without one, the
+app receives an ad-hoc signature and works locally, but it is not suitable for
+distribution or notarization. You can choose a specific certificate with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | APPLE_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)' bash
+```
+
+On Linux, the app and desktop launcher are installed for the current user under
+`~/.local`; no system-wide app files are modified. For Windows, the right path
+is a signed installer in [GitHub Releases](https://github.com/alexclaz/dbfock/releases),
+because Wails also depends on WebView2 and the MSVC runtime. That installer is
+not published yet, so the bootstrap script deliberately does not attempt a
+source build on Windows.
+
+If you already have a checkout, use the platform installer directly:
+
+```bash
+make install-desktop # macOS
+make install-linux   # Linux
+```
+
 On macOS, the generated app is written under `backend/build/bin/`. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
 
 ### macOS Gatekeeper
@@ -200,6 +237,8 @@ Then open DBfock again. If you kept the app somewhere else, replace `/Applicatio
 | `make typecheck` | Run Nuxt/TypeScript checks. |
 | `make build` | Build the web API and frontend. |
 | `make build-desktop` | Build the native desktop app. |
+| `make install-desktop` | Build and install the macOS app in `/Applications`. |
+| `make install-linux` | Build and install the Linux app for the current user. |
 | `make docker-up` | Start the web stack with Docker Compose. |
 
 ## API Highlights

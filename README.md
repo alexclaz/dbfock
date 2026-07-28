@@ -209,7 +209,7 @@ On macOS, the generated app is written under `backend/build/bin/`. The desktop a
 
 ### Desktop update notice
 
-The desktop app checks `backend/version.txt` on the `main` branch when it starts. If a newer semantic version is available, it offers to copy the official `install.sh` command; paste it into Terminal to build and install the update. This does not replace the running app or bypass macOS security checks.
+The desktop app checks `backend/version.txt` on the `main` branch when it starts. If a newer semantic version is available, it offers **Update now**, which opens the official GitHub Releases page in the default browser. Download and installation remain explicit user actions; the running app is not replaced automatically.
 
 When publishing a desktop build, update both `backend/version.txt` and `backend/wails.json`'s `productVersion` before pushing the build.
 

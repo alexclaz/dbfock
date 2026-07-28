@@ -14,7 +14,7 @@ const { restoreLocale } = useI18n()
 const { restoreFontPreferences } = useFontPreferences()
 const { t } = useI18n()
 const { info } = useToast()
-const { update, checkForUpdate, copyUpdateCommand } = useAppUpdate()
+const { update, checkForUpdate, isWails, openWailsUpdate } = useAppUpdate()
 const showUpdate = ref(false)
 
 function confirmLeaving(event: BeforeUnloadEvent) {
@@ -52,14 +52,18 @@ onMounted(() => {
   else if (saved === 'auto' || saved === 'system') theme.value = 'vscode-dark'
   window.addEventListener('beforeunload', confirmLeaving)
   applyTheme()
-  void checkForUpdate().then((available) => { showUpdate.value = Boolean(available) })
+  void checkForUpdate().then((available) => {
+    if (!available) return
+    if (isWails) showUpdate.value = true
+    else info(t('update.availableNotice', { version: available.latestVersion }))
+  })
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', confirmLeaving))
 
-async function prepareUpdate() {
-  if (await copyUpdateCommand()) info(t('update.commandCopied'))
+function prepareUpdate() {
+  if (openWailsUpdate()) info(t('update.updateOpening'))
   showUpdate.value = false
 }
 </script>
 
-<template><NuxtLayout><NuxtPage /></NuxtLayout><AppToast /><AppConfirmDialog v-model="showUpdate" :title="t('update.available')" :description="t('update.availableDescription', { version: update?.latestVersion || '' })" :confirm-label="t('update.copyCommand')" :cancel-label="t('update.later')" @confirm="prepareUpdate" /></template>
+<template><NuxtLayout><NuxtPage /></NuxtLayout><AppToast /><AppConfirmDialog v-model="showUpdate" :title="t('update.available')" :description="t('update.availableWailsDescription', { version: update?.latestVersion || '' })" :confirm-label="t('update.updateNow')" :cancel-label="t('update.later')" @confirm="prepareUpdate" /></template>

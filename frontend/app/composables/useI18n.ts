@@ -69,13 +69,34 @@ const messages: Record<Locale, Record<string, string>> = {
   },
 }
 
+const updateMessages: Record<Locale, Record<string, string>> = {
+  'pt-BR': {
+    'update.availableDescription': 'A versão {version} está disponível.',
+    'update.availableWailsDescription': 'A versão {version} está disponível. Clique em “Atualizar agora” para abrir a página oficial de atualização.',
+    'update.availableNotice': 'A versão {version} do DBfock está disponível.',
+    'update.upToDate': 'Você já está na versão mais recente ({version}).',
+    'update.checkError': 'Não foi possível verificar atualizações agora.',
+    'update.updateNow': 'Atualizar agora',
+    'update.updateOpening': 'Abrindo a página de atualização.',
+  },
+  'en-US': {
+    'update.availableDescription': 'Version {version} is available.',
+    'update.availableWailsDescription': 'Version {version} is available. Select “Update now” to open the official update page.',
+    'update.availableNotice': 'DBfock version {version} is available.',
+    'update.upToDate': 'You are already on the latest version ({version}).',
+    'update.checkError': 'Could not check for updates right now.',
+    'update.updateNow': 'Update now',
+    'update.updateOpening': 'Opening the update page.',
+  },
+}
+
 const storageKey = 'dbfock.locale'
 
 export function useI18n() {
   const locale = useState<Locale>('locale', () => 'pt-BR')
 
   function t(key: string, values: Values = {}) {
-    const message = messages[locale.value][key] ?? messages['pt-BR'][key] ?? key
+    const message = updateMessages[locale.value][key] ?? messages[locale.value][key] ?? updateMessages['pt-BR'][key] ?? messages['pt-BR'][key] ?? key
     return message.replace(/\{(\w+)\}/g, (_, name: string) => String(values[name] ?? `{${name}}`))
   }
 

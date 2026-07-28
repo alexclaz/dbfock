@@ -48,6 +48,8 @@ function savedTabs(value: unknown): WorkspaceTab[] | undefined {
       && (candidate.database === undefined || typeof candidate.database === 'string')
       && (candidate.table === undefined || typeof candidate.table === 'string')
       && (candidate.sql === undefined || typeof candidate.sql === 'string')
+      && (candidate.sqlScrollTop === undefined || (typeof candidate.sqlScrollTop === 'number' && Number.isFinite(candidate.sqlScrollTop) && candidate.sqlScrollTop >= 0))
+      && (candidate.sqlScrollLeft === undefined || (typeof candidate.sqlScrollLeft === 'number' && Number.isFinite(candidate.sqlScrollLeft) && candidate.sqlScrollLeft >= 0))
       && (candidate.queryNumber === undefined || (typeof candidate.queryNumber === 'number' && Number.isInteger(candidate.queryNumber) && candidate.queryNumber > 0))
       && (candidate.tableSection === undefined || validTableSections.has(candidate.tableSection))
       && (candidate.databaseSection === undefined || validDatabaseSections.has(candidate.databaseSection))

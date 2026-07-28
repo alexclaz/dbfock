@@ -29,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   updateSql: [sql: string]
   updateExecutionConnection: [connectionId?: string]
+  viewport: [viewport: { top: number; left: number }]
   execute: [sql: string, newResultTab?: boolean]
   explain: [sql: string]
   createSmartQuery: [sql: string]
@@ -77,7 +78,7 @@ function resizeHorizontal(event: PointerEvent) {
 <template>
   <div class="flex h-full min-h-0 flex-col">
     <div class="relative flex min-h-64 shrink-0 border-b border-line" :style="{ height: `${editorHeight}%` }">
-      <SqlEditor ref="sqlEditor" :tab-id="tab.id" split :width="showAIAgent ? editorWidth : 'calc(100% - 1.5rem)'" :model-value="tab.sql || ''" :connection-id="queryConnection?.id || ''" :connection-name="queryConnection?.name || ''" :connections="connections" :execution-connection-id="tab.executionConnectionId" :initial-database="queryConnection?.initialDatabase" :production="queryConnection?.environment === 'production'" :running="running" @update:model-value="emit('updateSql', $event)" @update:execution-connection-id="emit('updateExecutionConnection', $event)" @execute="(sql, newResultTab) => emit('execute', sql, newResultTab)" @explain="emit('explain', $event)" @create-smart-query="emit('createSmartQuery', $event)" @improve="emit('improve', $event)" @send-to-chat="aiAgent?.pasteQuery($event)" @new-query="emit('newQuery')" @save-query="emit('saveQuery')" />
+      <SqlEditor ref="sqlEditor" :tab-id="tab.id" split :width="showAIAgent ? editorWidth : 'calc(100% - 1.5rem)'" :model-value="tab.sql || ''" :connection-id="queryConnection?.id || ''" :connection-name="queryConnection?.name || ''" :connections="connections" :execution-connection-id="tab.executionConnectionId" :initial-database="queryConnection?.initialDatabase" :scroll-top="tab.sqlScrollTop" :scroll-left="tab.sqlScrollLeft" :production="queryConnection?.environment === 'production'" :running="running" @update:model-value="emit('updateSql', $event)" @update:execution-connection-id="emit('updateExecutionConnection', $event)" @viewport="emit('viewport', $event)" @execute="(sql, newResultTab) => emit('execute', sql, newResultTab)" @explain="emit('explain', $event)" @create-smart-query="emit('createSmartQuery', $event)" @improve="emit('improve', $event)" @send-to-chat="aiAgent?.pasteQuery($event)" @new-query="emit('newQuery')" @save-query="emit('saveQuery')" />
       <div v-if="showAIAgent" class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeHorizontal" @dblclick="emit('hideAIAgent')" />
       <AIAgentPanel v-if="showAIAgent && queryConnectionId" ref="aiAgent" :tab-id="tab.id" :width="100 - editorWidth" :connection-id="queryConnectionId" :database="queryConnection?.initialDatabase" :query="tab.sql" @apply="sqlEditor?.insertSQL($event)" @status="(tabId, status) => emit('aiStatus', tabId, status)" />
       <button v-else-if="aiConfigured" type="button" class="absolute inset-y-0 right-0 z-10 w-6 border-l border-line bg-panel text-xs font-medium text-muted hover:bg-canvas hover:text-ink" :title="t('aiAgent.title')" :aria-label="t('aiAgent.title')" style="writing-mode: vertical-rl" @click="emit('showAIAgent')">{{ t('aiAgent.title') }}</button>

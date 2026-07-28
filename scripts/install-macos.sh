@@ -104,6 +104,11 @@ find_signing_identity() {
   done
 }
 
+prepare_desktop_icon() {
+  mkdir -p "$PROJECT_ROOT/backend/build"
+  cp "$PROJECT_ROOT/backend/appicon.png" "$PROJECT_ROOT/backend/build/appicon.png"
+}
+
 ensure_go
 ensure_node
 
@@ -114,6 +119,7 @@ npm ci
 printf 'Building DBfock...\n'
 cd "$PROJECT_ROOT/backend"
 go mod download
+prepare_desktop_icon
 go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.1 build
 
 [[ -d "$BUILD_APP" ]] || fail "Build completed but did not produce $BUILD_APP."

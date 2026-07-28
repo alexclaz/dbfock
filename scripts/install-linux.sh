@@ -108,6 +108,11 @@ install_linux_build_dependencies() {
   fi
 }
 
+prepare_desktop_icon() {
+  mkdir -p "$PROJECT_ROOT/backend/build"
+  cp "$PROJECT_ROOT/backend/appicon.png" "$PROJECT_ROOT/backend/build/appicon.png"
+}
+
 [[ "$(uname -s)" == 'Linux' ]] || fail 'This installer only supports Linux.'
 command -v curl >/dev/null 2>&1 || fail 'curl is required to install missing build tools.'
 
@@ -127,6 +132,7 @@ npm ci
 printf 'Building DBfock...\n'
 cd "$PROJECT_ROOT/backend"
 go mod download
+prepare_desktop_icon
 if [[ -n "$WAILS_TAGS" ]]; then
   go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.1 build -tags "$WAILS_TAGS"
 else
@@ -138,7 +144,7 @@ build_binary="$PROJECT_ROOT/backend/build/bin/DBfock"
 
 mkdir -p "$(dirname "$INSTALL_BIN")" "$(dirname "$DESKTOP_FILE")" "$(dirname "$ICON_FILE")"
 install -m 755 "$build_binary" "$INSTALL_BIN"
-install -m 644 "$PROJECT_ROOT/frontend/public/branding/favicon/android-chrome-512x512.png" "$ICON_FILE"
+install -m 644 "$PROJECT_ROOT/backend/appicon.png" "$ICON_FILE"
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Type=Application

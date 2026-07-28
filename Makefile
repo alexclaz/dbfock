@@ -8,7 +8,7 @@ dev-frontend:
 
 prepare-desktop-icon:
 	mkdir -p backend/build
-	cp frontend/public/branding/favicon/android-chrome-512x512.png backend/build/appicon.png
+	cp backend/appicon.png backend/build/appicon.png
 
 dev-desktop: prepare-desktop-icon
 	cd backend && go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.1 dev

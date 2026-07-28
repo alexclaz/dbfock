@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dbfock/database-manager/backend/internal/ai"
@@ -32,6 +33,9 @@ import (
 
 //go:embed all:desktop/assets
 var assets embed.FS
+
+//go:embed version.txt
+var desktopVersion string
 
 type desktopApp struct {
 	server *http.Server
@@ -77,6 +81,7 @@ func newDesktopApp() (*desktopApp, error) {
 		return nil, err
 	}
 	cfg.Env = "desktop"
+	cfg.AppVersion = strings.TrimSpace(desktopVersion)
 	cfg.Host = "127.0.0.1"
 	cfg.Port = "18080"
 	cfg.DatabasePath = filepath.Join(dataDir, "app.db")

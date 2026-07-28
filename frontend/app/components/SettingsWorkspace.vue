@@ -32,6 +32,7 @@ const api = useApi()
 const workspace = useWorkspaceStore()
 const { locale, setLocale, t, locales } = useI18n()
 const { error: notifyError, success: notifySuccess } = useToast()
+const { update, currentVersion, checking: checkingForUpdate, checkForUpdate, copyUpdateCommand } = useAppUpdate()
 const activeSection = ref<SettingsSection>(props.section || 'appearance')
 const theme = useState<ThemePreference>('theme-preference', () => 'vscode-dark')
 const { textScale, setTextScale } = useTextScale()
@@ -197,6 +198,8 @@ function selectSection(section: SettingsSection) { activeSection.value = section
 function formatDate(value: string) { return new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function stageLabel(stage: string) { return t(`audit.stage.${stage}`) }
 function toggleAuditRun(runId: string) { if (expandedAuditRuns.has(runId)) expandedAuditRuns.delete(runId); else expandedAuditRuns.add(runId) }
+async function checkForAppUpdate() { await checkForUpdate(true) }
+async function prepareUpdate() { if (await copyUpdateCommand()) notifySuccess(t('update.commandCopied')) }
 watch(error, (message) => { if (message) { notifyError(message); error.value = '' } })
 async function exportConnections() {
   connectionTransferError.value = ''; connectionTransferSuccess.value = ''
@@ -314,7 +317,7 @@ watch(appliedTextScaleIndex, (index) => { pendingTextScaleIndex.value = index })
             </div>
           </form>
 
-          <section v-else-if="activeSection === 'about'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('settings.about') }}</h3><p class="mt-1 text-sm text-muted">{{ t('about.description') }}</p><dl class="mt-6 overflow-hidden rounded-lg border border-line bg-panel"><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.version') }}</dt><dd class="font-mono text-sm font-medium">{{ appVersion }}</dd></div><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.license') }}</dt><dd class="font-mono text-sm font-medium">{{ license }}</dd></div><div class="flex items-center justify-between gap-4 px-4 py-3"><dt class="text-sm text-muted">{{ t('about.repository') }}</dt><dd><a class="text-sm font-medium text-accent hover:underline" :href="githubUrl" target="_blank" rel="noreferrer">alexclaz/dbfock</a></dd></div></dl></section>
+          <section v-else-if="activeSection === 'about'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('settings.about') }}</h3><p class="mt-1 text-sm text-muted">{{ t('about.description') }}</p><dl class="mt-6 overflow-hidden rounded-lg border border-line bg-panel"><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.version') }}</dt><dd class="font-mono text-sm font-medium">{{ currentVersion || appVersion }}</dd></div><div class="flex items-center justify-between gap-4 border-b border-line px-4 py-3"><dt class="text-sm text-muted">{{ t('about.license') }}</dt><dd class="font-mono text-sm font-medium">{{ license }}</dd></div><div class="flex items-center justify-between gap-4 px-4 py-3"><dt class="text-sm text-muted">{{ t('about.repository') }}</dt><dd><a class="text-sm font-medium text-accent hover:underline" :href="githubUrl" target="_blank" rel="noreferrer">alexclaz/dbfock</a></dd></div></dl><div class="mt-4 rounded-lg border border-line bg-panel p-4"><h4 class="text-sm font-medium">{{ update ? t('update.available') : t('update.title') }}</h4><p class="mt-1 text-sm text-muted">{{ update ? t('update.availableDescription', { version: update.latestVersion }) : t('update.description') }}</p><div class="mt-4 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="checkingForUpdate" @click="checkForAppUpdate">{{ checkingForUpdate ? t('update.checking') : t('update.check') }}</button><button v-if="update" type="button" class="rounded-md bg-accent px-3 py-2 text-sm text-white hover:bg-accent/90" @click="prepareUpdate">{{ t('update.copyCommand') }}</button></div></div></section>
 
           <div v-else>
             <div class="flex items-start justify-between gap-4"><div><h3 class="text-base font-semibold">{{ t('settings.aiAudit') }}</h3><p class="mt-1 text-sm text-muted">{{ t('audit.description') }}</p></div><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="loadingAudit" @click="loadAuditLogs">{{ loadingAudit ? t('audit.loading') : t('audit.refresh') }}</button></div>

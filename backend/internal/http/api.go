@@ -53,6 +53,7 @@ func (a *API) Router() http.Handler {
 		respond(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	r.Route("/api", func(r chi.Router) {
+		r.Get("/app/version", a.getAppVersion)
 		r.Get("/ai/settings", a.getAISettings)
 		r.Put("/ai/settings", a.saveAISettings)
 		r.Post("/ai/models", a.listAIModels)
@@ -118,6 +119,10 @@ func (a *API) Router() http.Handler {
 		r.Delete("/query-history/{id}", a.deleteHistory)
 	})
 	return r
+}
+
+func (a *API) getAppVersion(w http.ResponseWriter, _ *http.Request) {
+	respond(w, http.StatusOK, map[string]string{"version": a.config.AppVersion})
 }
 
 type connectionRequest struct {

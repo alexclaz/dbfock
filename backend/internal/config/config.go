@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	Env                  string
+	AppVersion           string
 	Host                 string
 	Port                 string
 	DatabasePath         string

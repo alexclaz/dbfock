@@ -12,6 +12,10 @@ type ThemePreference = 'dbfock-light' | 'dbfock-dark' | 'github-light' | 'github
 const theme = useState<ThemePreference>('theme-preference', () => 'vscode-dark')
 const { restoreLocale } = useI18n()
 const { restoreFontPreferences } = useFontPreferences()
+const { t } = useI18n()
+const { info } = useToast()
+const { update, checkForUpdate, copyUpdateCommand } = useAppUpdate()
+const showUpdate = ref(false)
 
 function confirmLeaving(event: BeforeUnloadEvent) {
   // Browsers intentionally provide the dialog text to prevent abusive custom prompts.
@@ -48,8 +52,14 @@ onMounted(() => {
   else if (saved === 'auto' || saved === 'system') theme.value = 'vscode-dark'
   window.addEventListener('beforeunload', confirmLeaving)
   applyTheme()
+  void checkForUpdate().then((available) => { showUpdate.value = Boolean(available) })
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', confirmLeaving))
+
+async function prepareUpdate() {
+  if (await copyUpdateCommand()) info(t('update.commandCopied'))
+  showUpdate.value = false
+}
 </script>
 
-<template><NuxtLayout><NuxtPage /></NuxtLayout><AppToast /></template>
+<template><NuxtLayout><NuxtPage /></NuxtLayout><AppToast /><AppConfirmDialog v-model="showUpdate" :title="t('update.available')" :description="t('update.availableDescription', { version: update?.latestVersion || '' })" :confirm-label="t('update.copyCommand')" :cancel-label="t('update.later')" @confirm="prepareUpdate" /></template>

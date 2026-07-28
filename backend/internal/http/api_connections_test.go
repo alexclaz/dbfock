@@ -3,11 +3,32 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/dbfock/database-manager/backend/internal/config"
 	"github.com/dbfock/database-manager/backend/internal/models"
 )
+
+func TestGetAppVersion(t *testing.T) {
+	api := &API{config: config.Config{AppVersion: "0.5.5"}}
+	recorder := httptest.NewRecorder()
+	api.getAppVersion(recorder, httptest.NewRequest("GET", "/api/app/version", nil))
+
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	var response struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Version != "0.5.5" {
+		t.Fatalf("version = %q, want 0.5.5", response.Version)
+	}
+}
 
 func TestConnectionExportRequestOmitsPassword(t *testing.T) {
 	connection := models.Connection{

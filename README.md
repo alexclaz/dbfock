@@ -207,6 +207,12 @@ make install-linux   # Linux
 
 On macOS, the generated app is written under `backend/build/bin/`. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
 
+### Desktop update notice
+
+The desktop app checks `backend/version.txt` on the `main` branch when it starts. If a newer semantic version is available, it offers to copy the official `install.sh` command; paste it into Terminal to build and install the update. This does not replace the running app or bypass macOS security checks.
+
+When publishing a desktop build, update both `backend/version.txt` and `backend/wails.json`'s `productVersion` before pushing the build.
+
 ### macOS Gatekeeper
 
 Local builds are not notarized with an Apple Developer ID yet. If macOS shows **"DBfock is damaged and can't be opened"** after moving a downloaded app into Applications, remove the quarantine attribute:

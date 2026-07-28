@@ -2,146 +2,52 @@
 
 # DBfock
 
-**A modern MySQL workspace for exploring schemas, querying data, and using AI with real database context.**
-
-DBfock is a focused, lightweight alternative to traditional database IDEs. It brings MySQL connections, schema browsing, SQL editing, tabbed results, saved queries, auditability, and AI assistance into a clean workspace built for people who need to understand and operate databases every day.
-
-Run it in the browser with Docker or local dev servers, or package it as a native desktop app with Wails.
+A modern MySQL workspace for browsing schemas, running SQL, and using AI with real database context.
 
 ![DBfock screenshot](./screenshot.png)
 
-## Support
+## Install the desktop app
 
-DBfock is currently distributed without Apple Developer ID notarization. If you want to support the project and help fund the Apple Developer license, you can do it here:
+macOS and Linux:
 
-[Buy me a coffee](https://buymeacoffee.com/alexclaz)
-
-## Why DBfock
-
-- **Query data with less friction:** connect, browse schemas, open tables, and run SQL without leaving the workspace.
-- **AI that understands your schema:** choose the database/table scope, then ask the agent to explain queries, improve SQL, or generate new statements with context.
-- **Safer production work:** production connections hold pending changes until you explicitly commit or roll them back.
-- **Persistent workflow:** tabs, history, saved queries, Smart Queries, and preferences are ready when you come back.
-- **Local-first security:** connection passwords and AI keys are encrypted in the application store.
-- **Easy migration:** import compatible MySQL connection metadata from DBeaver projects.
-
-## Features
-
-### Database Workspace
-
-- Create, test, edit, import, and export MySQL connections.
-- Assign connection colors and mark each connection as development or production.
-- Browse connections, connection status, databases, and tables from the sidebar.
-- Work in tabs for home, tables, SQL, stats, saved queries, Smart Queries, and settings.
-- Use global search to jump across tabs, saved queries, Smart Queries, and settings.
-
-### Schema Navigation
-
-- List databases, tables, and views.
-- Inspect table structure.
-- View columns, indexes, constraints, foreign keys, references, triggers, and DDL.
-- Open paginated table data in a grid.
-
-### SQL Editor
-
-- CodeMirror-powered SQL editor.
-- Run SQL with `Ctrl/Cmd + Enter`.
-- Run into a new result tab with `Ctrl/Cmd + \`.
-- Query history.
-- Multiple result tabs.
-- Cancellable queries by request id.
-- Row limits, pagination, and query timeouts.
-- Export results as CSV, JSON, and TSV.
-- Formatting, editor search, copy/paste actions, and productivity shortcuts.
-
-### AI SQL Assistant
-
-- AI assistant panel attached to SQL tabs: ask SQL/database questions, create queries, explain, review, debug, and improve existing SQL.
-- Providers: OpenAI, OpenRouter, Anthropic, and Ollama.
-- Model selection from the configured provider.
-- Optional use of the currently open editor query as context.
-- Responses stream into the chat as the provider generates them.
-- Configurable schema scope: all databases/tables or a manual selection.
-- Quick actions to explain SQL, improve SQL, and insert AI-generated SQL into the editor.
-- Smart Queries generated from filtered SELECT statements, with editable parameters for reuse without hand-editing SQL.
-- Local AI audit logs with the sent prompt, received response, execution stage, provider, and model.
-
-### Operations and Security
-
-- Connection passwords and API keys are encrypted with AES-GCM.
-- S3-compatible workspace backup and restore: the complete local workspace is written as `dbfock/backup.sql`; S3 credentials stay encrypted locally and are never included in that file.
-- Password values are not returned in API responses, exports, or logs.
-- Schema identifiers are validated before SQL interpolation.
-- Pagination values are parameterized.
-- Payload size, returned rows, concurrency, MySQL pool sizes, and query timeouts are bounded.
-- CORS allow-listing, rate limiting, and consistent error responses.
-
-### Customization
-
-- Interface available in English and Brazilian Portuguese.
-- Themes for DBfock Light, DBfock Dark, GitHub, VS Code, One Dark, Dracula, Cobalt2, Claude Code, Supabase, and Monokai.
-- Text scale controls.
-- Keyboard shortcut reference in settings.
-
-## How It Works
-
-```text
-Nuxt 4 / Vue 3 / TypeScript
-        | REST
-Go + Chi API -- provider registry -- MySQL (`database/sql`)
-        |
-Local SQLite application store
-
-Wails v2 packages the Nuxt build and starts the local Go API inside the desktop app.
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | bash
 ```
 
-- **Backend:** Go 1.24, Chi, `database/sql`, `github.com/go-sql-driver/mysql`, SQLite through `modernc.org/sqlite`, and Wails v2.
-- **Frontend:** Nuxt 4.4, Vue 3 Composition API, Pinia, Tailwind CSS, and CodeMirror.
-- **Provider boundary:** the `database.Provider` interface separates schema discovery, data reads, and query execution. MySQL is implemented today; additional database engines can be added behind the same HTTP contract.
-- **Local SQLite:** stores DBfock metadata only, such as connections, preferences, history, and audit logs. It does not replace or mix with the MySQL databases you manage.
+The installer builds DBfock locally and installs it in `/Applications` on macOS or `~/.local` on Linux. It asks before installing missing dependencies. For a non-interactive install, use:
 
-## Project Structure
-
-```text
-backend/
-  cmd/api/                 Browser/API entrypoint
-  internal/                API, config, providers, repository, AI, and middleware
-  migrations/              SQLite application migrations
-  main.go                  Wails desktop entrypoint
-  wails.json               Desktop app configuration
-
-frontend/
-  app/components/          Workspace, SQL editor, data grid, AI, settings, and tree
-  app/pages/               Main screen
-  app/stores/              Workspace state
-  app/utils/               DBeaver import and result export helpers
-  public/branding/         Brand icons and assets
-
-docker-compose.yml         Web stack with frontend and backend
-Makefile                   Common development commands
-banner.png                 README banner
-screenshot.png             README screenshot
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | DBFOCK_YES=1 bash
 ```
 
-## Run with Docker
+Windows support will be distributed through [GitHub Releases](https://github.com/alexclaz/dbfock/releases).
 
-Requirements: Docker, Docker Compose, and a reachable MySQL server.
+## What it does
+
+- Manage MySQL connections, including import from DBeaver and encrypted local credentials.
+- Browse databases, tables, columns, indexes, constraints, triggers, DDL, and data.
+- Work with persistent tabs, saved queries, query history, result tabs, CSV/JSON/TSV export, and Smart Queries.
+- Use a CodeMirror SQL editor with search, formatting, keyboard shortcuts, and cancellable queries.
+- Keep production changes pending until they are explicitly committed or rolled back.
+- Ask OpenAI, OpenRouter, Anthropic, or Ollama to explain, improve, and generate SQL using selected schema context.
+- Back up and restore the local workspace to S3-compatible storage.
+
+## Run in the browser
+
+### Docker
+
+Requires Docker, Docker Compose, and a reachable MySQL server.
 
 ```bash
 cp .env.example .env
-# Set ENCRYPTION_KEY in .env before storing real credentials.
 docker compose up --build
 ```
 
-Open [http://localhost:13000](http://localhost:13000). The API health endpoint is available at [http://localhost:18080/health](http://localhost:18080/health).
+Open [http://localhost:13000](http://localhost:13000). Set `ENCRYPTION_KEY` in `.env` before storing real credentials.
 
-The Docker host ports are configurable in `.env`: `BACKEND_PORT` defaults to `18080` and `FRONTEND_PORT` defaults to `13000`. For example, set `BACKEND_PORT=19080` and `FRONTEND_PORT=13001` before starting Compose if either port is in use. The containers continue using their internal ports, so only the host mappings change.
+### Local development
 
-Docker Compose starts DBfock only. Add a connection inside the UI for the MySQL server you want to manage.
-
-## Run Locally
-
-Requirements: Go 1.24+, Node.js 24+, npm, and a reachable MySQL server.
+Requires Go 1.24+, Node.js 24+, npm, and a reachable MySQL server.
 
 ```bash
 cp .env.example .env
@@ -151,128 +57,36 @@ cd backend && ENCRYPTION_KEY=local-development-key go run ./cmd/api
 cd frontend && npm install && npm run dev
 ```
 
-Open [http://localhost:13000](http://localhost:13000). The local API defaults to [http://localhost:18080/health](http://localhost:18080/health); override `APP_PORT`, `FRONTEND_PORT`, and `NUXT_PUBLIC_API_BASE` together if you need different local ports.
+Open [http://localhost:13000](http://localhost:13000).
 
-## Desktop App
-
-For live-reload desktop development:
+## Desktop development
 
 ```bash
-make dev-desktop
+make dev-desktop     # Wails with live reload
+make build-desktop   # native build
 ```
 
-To build the app:
+If you already have a checkout, install it with `make install-desktop` (macOS) or `make install-linux` (Linux).
 
-```bash
-make build-desktop
-```
+When a newer version exists, the web version shows a notification. The Wails app also offers **Update now**, opening the official releases page; installation remains an explicit user action.
 
-For a one-command install on macOS or Linux, run this from a terminal:
+## Architecture
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | bash
-```
+- **Frontend:** Nuxt 4, Vue 3, TypeScript, Pinia, Tailwind CSS, and CodeMirror.
+- **Backend:** Go, Chi, `database/sql`, MySQL, SQLite, and Wails v2.
+- **Local data:** SQLite stores DBfock metadata, preferences, history, and encrypted secrets; it never replaces the MySQL databases you manage.
 
-It downloads a temporary copy of the source, accepts Go 1.20+ (which downloads
-the project's Go 1.24 toolchain automatically) and verifies Node.js 24+.
-It asks before installing any missing dependency.
-On Linux it also asks before installing the GTK/WebKit build requirements. Use
-`DBFOCK_YES=1` only when you want to approve those dependency installs without
-prompts. The non-interactive form is `curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | DBFOCK_YES=1 bash`.
-
-On macOS, the app is installed in `/Applications`. The installer uses a locally
-installed `Developer ID Application` certificate, falling back to `Apple
-Development` for local use. An Apple Developer Program membership alone is not
-a certificate: create and install it in Keychain Access first. Without one, the
-app receives an ad-hoc signature and works locally, but it is not suitable for
-distribution or notarization. You can choose a specific certificate with:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | APPLE_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)' bash
-```
-
-On Linux, the app and desktop launcher are installed for the current user under
-`~/.local`; no system-wide app files are modified. For Windows, the right path
-is a signed installer in [GitHub Releases](https://github.com/alexclaz/dbfock/releases),
-because Wails also depends on WebView2 and the MSVC runtime. That installer is
-not published yet, so the bootstrap script deliberately does not attempt a
-source build on Windows.
-
-If you already have a checkout, use the platform installer directly:
-
-```bash
-make install-desktop # macOS
-make install-linux   # Linux
-```
-
-On macOS, the generated app is written under `backend/build/bin/`. The desktop app keeps its SQLite database and generated encryption key in the OS user configuration directory under `DBfock`.
-
-### Desktop update notice
-
-The desktop app checks `backend/version.txt` on the `main` branch when it starts. If a newer semantic version is available, it offers **Update now**, which opens the official GitHub Releases page in the default browser. Download and installation remain explicit user actions; the running app is not replaced automatically.
-
-When publishing a desktop build, update both `backend/version.txt` and `backend/wails.json`'s `productVersion` before pushing the build.
-
-### macOS Gatekeeper
-
-Local builds are not notarized with an Apple Developer ID yet. If macOS shows **"DBfock is damaged and can't be opened"** after moving a downloaded app into Applications, remove the quarantine attribute:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/DBfock.app
-```
-
-Then open DBfock again. If you kept the app somewhere else, replace `/Applications/DBfock.app` with that path.
-
-## First Steps
-
-1. Click **Create connection**.
-2. Enter host, port, username, password, initial database, and environment.
-3. Use **Test connection** before saving.
-4. Connect, expand the sidebar tree, and open a table.
-5. Use **New SQL query** to execute statements.
-6. Save recurring SQL or create Smart Queries from filtered SELECT statements.
-7. Configure AI in **Settings -> AI agent** to explain, improve, and generate SQL with schema context.
-
-## Useful Commands
+## Common commands
 
 | Command | Description |
 | --- | --- |
-| `make dev-backend` | Start only the Go API. |
-| `make dev-frontend` | Start only the Nuxt app. |
-| `make dev-desktop` | Open the Wails app with live reload. |
-| `make test` | Run the Go test suite. |
-| `make typecheck` | Run Nuxt/TypeScript checks. |
-| `make build` | Build the web API and frontend. |
-| `make build-desktop` | Build the native desktop app. |
-| `make install-desktop` | Build and install the macOS app in `/Applications`. |
-| `make install-linux` | Build and install the Linux app for the current user. |
-| `make docker-up` | Start the web stack with Docker Compose. |
-
-## API Highlights
-
-- `GET /health`
-- `GET|POST /api/connections`
-- `GET|PUT|DELETE /api/connections/:id`
-- `POST /api/connections/test`
-- `GET /api/connections/export`
-- `POST /api/connections/import`
-- `POST /api/connections/:id/connect`
-- `GET /api/connections/:id/databases`
-- `GET /api/connections/:id/databases/:database/tables`
-- `GET /api/connections/:id/databases/:database/tables/:table/structure`
-- `GET /api/connections/:id/databases/:database/tables/:table/data`
-- `POST /api/connections/:id/query`
-- `POST /api/connections/:id/query/cancel`
-- `GET|PUT /api/ai/settings`
-- `POST /api/ai/models`
-- `POST /api/ai/chat/jobs`
-- `GET /api/ai/chat/jobs/:id`
-- `POST /api/ai/smart-queries`
-- `GET /api/ai/audit-logs`
-- `GET|PUT /api/backup/settings`
-- `POST /api/backup/create`
-- `POST /api/backup/restore`
+| `make dev-backend` | Start the Go API. |
+| `make dev-frontend` | Start the Nuxt app. |
+| `make dev-desktop` | Start the Wails app. |
+| `make test` | Run backend tests. |
+| `make typecheck` | Run frontend type checks. |
+| `make docker-up` | Start Docker Compose. |
 
 ## License
 
-DBfock is released under the [MIT License](./LICENSE).
+[MIT](./LICENSE)

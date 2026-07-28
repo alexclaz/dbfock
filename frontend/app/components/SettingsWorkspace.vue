@@ -27,7 +27,7 @@ const license = 'MIT'
 const githubUrl = 'https://github.com/alexclaz/dbfock'
 
 const props = defineProps<{ section?: SettingsSection }>()
-const emit = defineEmits<{ 'ai-configured': [] }>()
+const emit = defineEmits<{ 'ai-configured': []; 'update:section': [section: SettingsSection] }>()
 const api = useApi()
 const workspace = useWorkspaceStore()
 const { locale, setLocale, t, locales } = useI18n()
@@ -194,7 +194,7 @@ async function deleteBackup() {
   catch (cause: any) { backupError.value = cause.message || 'Não foi possível excluir o backup.' }
   finally { deletingBackupKey.value = '' }
 }
-function selectSection(section: SettingsSection) { activeSection.value = section; if (section === 'audit') loadAuditLogs(); if (section === 'backup') loadBackupSettings() }
+function selectSection(section: SettingsSection) { activeSection.value = section; emit('update:section', section); if (section === 'audit') loadAuditLogs(); if (section === 'backup') loadBackupSettings() }
 function formatDate(value: string) { return new Intl.DateTimeFormat(locale.value, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value)) }
 function stageLabel(stage: string) { return t(`audit.stage.${stage}`) }
 function toggleAuditRun(runId: string) { if (expandedAuditRuns.has(runId)) expandedAuditRuns.delete(runId); else expandedAuditRuns.add(runId) }

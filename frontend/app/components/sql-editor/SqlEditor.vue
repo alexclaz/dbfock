@@ -8,6 +8,12 @@ import { Decoration, drawSelection, EditorView, keymap, lineNumbers, type Decora
 import { tags } from '@lezer/highlight'
 import type { ColumnInfo, Connection, DatabaseInfo, TableInfo } from '~/types/database'
 
+// The editor component is recreated when the workspace switches to a
+// non-SQL tab. Keep the CodeMirror state and viewport per workspace tab so
+// returning to a query feels like returning to the same editor.
+const editorStates = new Map<string, EditorState>()
+const editorViewports = new Map<string, { top: number; left: number }>()
+
 const props = withDefaults(defineProps<{ tabId: string; modelValue: string; connectionId: string; connectionName: string; connections?: Connection[]; executionConnectionId?: string; initialDatabase?: string; running?: boolean; split?: boolean; width?: number | string; queryActions?: boolean; production?: boolean }>(), { connections: () => [] })
 const emit = defineEmits<{ 'update:modelValue': [value: string]; 'update:executionConnectionId': [value?: string]; execute: [sql: string, newResultTab?: boolean]; explain: [sql: string]; improve: [sql: string]; createSmartQuery: [sql: string]; sendToChat: [sql: string]; newQuery: []; saveQuery: [] }>()
 const api = useApi()
@@ -22,7 +28,6 @@ const databases = ref<DatabaseInfo[]>([])
 const tablesByDatabase = new Map<string, TableInfo[]>()
 const columnsByTable = new Map<string, ColumnInfo[]>()
 let view: EditorView | undefined
-const editorStates = new Map<string, EditorState>()
 let currentTabId = ''
 let syncing = false
 let nextSearchMatchFrom: number | undefined
@@ -553,13 +558,29 @@ function createEditorState(doc: string) {
   return EditorState.create({ doc, extensions: [EditorState.allowMultipleSelections.of(true), EditorView.clickAddsSelectionRange.of((event) => event.altKey), lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, { key: 'Mod-Shift-l', run: selectAllOccurrences }, { key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-h', run: () => { focusReplace(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { const preferredSearchMatchFrom = nextSearchMatchFrom; nextSearchMatchFrom = undefined; syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { if (preferredSearchMatchFrom === undefined) updateSearch(); else { updateSearchHighlights(); selectSearchMatchAtOrAfter(preferredSearchMatchFrom) }; updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
 }
 
+function rememberEditorViewport(tabId = currentTabId) {
+  if (view && tabId) editorViewports.set(tabId, { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft })
+}
+
+function restoreEditorViewport(tabId: string) {
+  const viewport = editorViewports.get(tabId)
+  if (!viewport) return
+  requestAnimationFrame(() => {
+    if (!view) return
+    view.scrollDOM.scrollTop = viewport.top
+    view.scrollDOM.scrollLeft = viewport.left
+  })
+}
+
 watch(() => props.modelValue, (value) => { if (!syncing && view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value }, annotations: Transaction.addToHistory.of(false) }) })
 watch(() => props.connectionId, () => { databases.value = []; tablesByDatabase.clear(); columnsByTable.clear(); metadataState.value = 'idle'; loadDatabases() })
 watch(() => props.tabId, (tabId) => {
   if (!view || tabId === currentTabId) return
   editorStates.set(currentTabId, view.state)
+  rememberEditorViewport()
   view.setState(editorStates.get(tabId) || createEditorState(props.modelValue))
   currentTabId = tabId
+  restoreEditorViewport(tabId)
   updateSelectedSQL()
   closeContextMenu()
 }, { flush: 'sync' })
@@ -569,13 +590,14 @@ watch(isDarkTheme, (dark) => {
 })
 onMounted(() => {
   currentTabId = props.tabId
-  view = new EditorView({ state: createEditorState(props.modelValue), parent: editorHost.value! })
+  view = new EditorView({ state: editorStates.get(currentTabId) || createEditorState(props.modelValue), parent: editorHost.value! })
+  restoreEditorViewport(currentTabId)
   mountSearchControls()
   document.addEventListener('pointerdown', closeContextMenuOnPointerDown)
   document.addEventListener('keydown', closeContextMenuOnKeyDown)
   loadDatabases()
 })
-onBeforeUnmount(() => { editorStates.clear(); view?.destroy(); searchControls?.remove(); document.removeEventListener('pointerdown', closeContextMenuOnPointerDown); document.removeEventListener('keydown', closeContextMenuOnKeyDown) })
+onBeforeUnmount(() => { if (view) editorStates.set(currentTabId, view.state); rememberEditorViewport(); view?.destroy(); searchControls?.remove(); document.removeEventListener('pointerdown', closeContextMenuOnPointerDown); document.removeEventListener('keydown', closeContextMenuOnKeyDown) })
 </script>
 
 <template><section class="flex min-h-0 flex-col bg-[rgb(var(--editor-panel))] text-[rgb(var(--editor-ink))]" :class="split ? 'h-full shrink-0 border-r border-line' : 'h-[46%] min-h-64 w-full shrink-0 border-b border-line'" :style="split ? { width: typeof width === 'number' ? `${width}%` : width ?? '50%' } : undefined"><div class="flex h-10 items-center justify-between border-b border-[rgb(var(--editor-line))] px-3"><div class="flex min-w-0 items-center gap-2 text-xs text-[rgb(var(--editor-muted))]"><div v-if="connections.length" data-connection-menu class="relative min-w-0"><button type="button" class="flex max-w-52 items-center gap-1.5 rounded border border-transparent bg-transparent px-1.5 py-1 text-xs text-[rgb(var(--editor-ink))] hover:border-[rgb(var(--editor-line))] focus:border-accent focus:outline-none" :aria-label="t('editor.connectionLabel')" :aria-expanded="connectionMenuOpen" aria-haspopup="listbox" @click="connectionMenuOpen = !connectionMenuOpen"><span class="truncate">{{ selectedExecutionConnection?.name || connectionName }}</span><Icon name="lucide:chevron-down" class="h-3.5 w-3.5 shrink-0 text-[rgb(var(--editor-muted))] transition-transform" :class="connectionMenuOpen ? 'rotate-180' : ''" aria-hidden="true" /></button><div v-if="connectionMenuOpen" class="absolute left-0 top-full z-30 mt-1 min-w-52 overflow-hidden rounded-md border border-[rgb(var(--editor-line))] bg-[rgb(var(--editor-panel))] p-1 shadow-lg" role="listbox"><button v-for="connection in connections" :key="connection.id" type="button" class="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" :class="connection.id === selectedExecutionConnectionId ? 'font-medium text-accent' : ''" role="option" :aria-selected="connection.id === selectedExecutionConnectionId" @click="updateExecutionConnection(connection.id)"><span class="truncate">{{ connection.name }}</span><Icon v-if="connection.id === selectedExecutionConnectionId" name="lucide:check" class="h-3.5 w-3.5" aria-hidden="true" /></button></div></div><span v-else>{{ connectionName }}</span><span v-if="production" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('transaction.production') }}</span><span>· {{ metadataState === 'ready' ? t('editor.schemaReady') : t('editor.loadingSchema') }}</span></div><div class="flex gap-2"><template v-if="queryActions !== false"><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('newQuery')">{{ t('editor.newQuery') }}</button><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="$emit('saveQuery')">{{ t('editor.saveQuery') }}</button></template><button type="button" class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" :aria-label="t('editor.search')" :title="t('editor.search')" @click="focusSearch"><Icon name="lucide:search" class="h-3.5 w-3.5" aria-hidden="true" /></button><button class="rounded px-2 py-1 text-xs text-[rgb(var(--editor-ink))] hover:bg-[rgb(var(--editor-active))]" @click="format">{{ t('editor.format') }}</button><button class="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50" :disabled="running" @click="() => runCurrentStatement()">{{ running ? t('editor.running') : t('editor.run') }}</button></div></div><div ref="editorShell" class="relative min-h-0 flex-1"><div ref="editorHost" class="h-full min-h-0" /></div><div v-if="contextMenu" data-sql-context-menu class="fixed z-50 min-w-44 overflow-hidden rounded-md border border-line bg-panel py-1 shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @contextmenu.prevent><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('explain')">{{ t('editor.explainQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="createSmartQueryFromSelection">{{ t('editor.createSmartQuery') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="runSelectionAction('improve')">{{ t('editor.improveQuery') }}</button><div class="my-1 border-t border-line" /><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="copySelection">{{ copied ? t('editor.copied') : t('editor.copy') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas" @click="pasteFromClipboard">{{ t('editor.paste') }}</button><button type="button" class="block w-full px-3 py-2 text-left text-sm text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50" :disabled="!selectedSQL" @click="pasteSelectionToChat">{{ t('editor.pasteQueryToChat') }}</button></div></section></template>

@@ -30,8 +30,7 @@ const queryError = ref('')
 const showGlobalSearch = ref(false)
 const history = ref<QueryHistory[]>([])
 const selectedSavedQueryId = ref('')
-const sqlEditor = ref<{ insertSQL: (sql: string) => void }>()
-const aiAgent = ref<{ ask: (prompt: string) => Promise<void>; pasteQuery: (sql: string) => void }>()
+const sqlWorkspace = ref<{ ask: (prompt: string) => Promise<void> | undefined }>()
 const aiConfigured = ref(false)
 const aiVisible = ref(true)
 const editorHeight = ref(46)
@@ -91,7 +90,7 @@ function openSQLForConnection(connectionId?: string) {
   workspace.activeConnectionId = connection.id
   workspace.openTab({ id: `sql:${connection.id}:${Date.now()}`, title: t('query.defaultTitle', { number: queryNumber }), type: 'sql', connectionId: connection.id, executionConnectionId: connection.id, sql: 'SELECT * FROM users LIMIT 100;', queryNumber })
 }
-function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup') {
+function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup' | 'about') {
   const existing = workspace.tabs.find((tab) => tab.id === 'settings')
   if (existing) existing.settingsSection = section || 'appearance'
   else workspace.openTab({ id: 'settings', title: t('settings.title'), type: 'settings', settingsSection: section || 'appearance' })
@@ -564,8 +563,9 @@ function selectTab(id: string) {
 }
 function updateTableSection(section: 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl' | 'diagram' | 'tools') { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab) { tab.tableSection = section; tab.dirty = true } }
 function updateDatabaseSection(section: 'tables' | 'diagram') { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab) { tab.databaseSection = section; tab.dirty = true } }
-function explainSQL(sql: string) { aiAgent.value?.ask(`${t('query.explainPrompt', { sql })}\n\n${t('query.answerLanguage')}`) }
-function improveSQL(sql: string) { aiAgent.value?.ask(`${t('query.improvePrompt', { sql })}\n\n${t('query.answerLanguage')}`) }
+function updateSettingsSection(section: NonNullable<WorkspaceTab['settingsSection']>) { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab?.type === 'settings') tab.settingsSection = section }
+function explainSQL(sql: string) { sqlWorkspace.value?.ask(`${t('query.explainPrompt', { sql })}\n\n${t('query.answerLanguage')}`) }
+function improveSQL(sql: string) { sqlWorkspace.value?.ask(`${t('query.improvePrompt', { sql })}\n\n${t('query.answerLanguage')}`) }
 function updateAIStatus(tabId: string, status: 'running' | 'complete') { const tab = workspace.tabs.find((item) => item.id === tabId); if (tab) tab.aiStatus = status }
 async function loadAISettings() {
   try { aiConfigured.value = (await api<AISettings>('/ai/settings')).configured === true }
@@ -694,24 +694,17 @@ watch(() => workspace.activeConnectionId, () => {
             <button v-if="workspace.activeConnection" class="mt-4 text-sm text-accent" @click="connect">{{ t('home.connectTo', { name: workspace.activeConnection.name }) }}</button>
           </div>
         </div>
-        <SavedQueriesWorkspace v-else-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
-        <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
-        <QueryHistoryWorkspace v-else-if="activeTab.type === 'history'" :tabs="workspace.queryTabHistory" :queries="history" :connections="workspace.connections" @open-tab="reopenQueryTab" @remove-tab="removeQueryTabHistory" @open="openHistoryQuery" @save="saveHistoryQuery" @remove="removeHistoryQuery" />
-        <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`table:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" @open-database="openDatabaseFromTable" @open-table="openDatabaseTable" />
-        <DatabaseWorkspace v-else-if="activeTab.type === 'database' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`database:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :active-section="activeTab.databaseSection" @table="openDatabaseTable" @update:active-section="updateDatabaseSection" />
-        <ConnectionHomeWorkspace v-else-if="activeTab.type === 'connection-home' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`connection-home:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" @edit="editing = $event; showConnection = true" @new-query="openSQLForConnection($event.id)" @stats="openStats" @database="openDatabase" />
-        <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`stats:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
-        <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" />
-        <div v-else class="flex h-full min-h-0 flex-col">
-          <div class="relative flex min-h-64 shrink-0 border-b border-line" :style="{ height: `${editorHeight}%` }">
-            <SqlEditor ref="sqlEditor" :tab-id="activeTab.id" split :width="showAIAgent ? editorWidth : 'calc(100% - 1.5rem)'" :model-value="activeTab.sql || ''" :connection-id="queryConnection?.id || ''" :connection-name="queryConnection?.name || ''" :connections="workspace.connections" :execution-connection-id="activeTab.executionConnectionId" :initial-database="queryConnection?.initialDatabase" :production="queryConnection?.environment === 'production'" :running="running" @update:model-value="updateSQL" @update:execution-connection-id="updateExecutionConnection" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @send-to-chat="aiAgent?.pasteQuery($event)" @new-query="newSQL" @save-query="saveQuery" />
-            <div v-if="showAIAgent" class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeHorizontal" @dblclick="hideAIAgent" />
-            <AIAgentPanel v-if="showAIAgent && queryConnectionId" ref="aiAgent" :tab-id="activeTab.id" :width="100 - editorWidth" :connection-id="queryConnectionId" :database="queryConnection?.initialDatabase" :query="activeTab.sql" @apply="sqlEditor?.insertSQL($event)" @status="updateAIStatus" />
-            <button v-else-if="aiConfigured" type="button" class="absolute inset-y-0 right-0 z-10 w-6 border-l border-line bg-panel text-xs font-medium text-muted hover:bg-canvas hover:text-ink" :title="t('aiAgent.title')" :aria-label="t('aiAgent.title')" style="writing-mode: vertical-rl" @click="showHiddenAIAgent">{{ t('aiAgent.title') }}</button>
-          </div>
-          <div class="h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-accent" @pointerdown="resizeVertical" />
-          <QueryResults :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :loading="running" :loading-more="loadingMoreRows" :can-create-tab="true" :summary="activeResultSummary" @select-tab="activeResultTabIds[activeTab.id] = $event" @close-tab="closeResultTab(activeTab.id, $event)" @create-tab="createResultTab(activeTab.id)" @copy="copyActiveResult" @save="saveActiveResultEdits" @load-more="loadMoreRows" />
-        </div>
+        <KeepAlive v-else>
+          <SavedQueriesWorkspace v-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
+          <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
+          <QueryHistoryWorkspace v-else-if="activeTab.type === 'history'" :tabs="workspace.queryTabHistory" :queries="history" :connections="workspace.connections" @open-tab="reopenQueryTab" @remove-tab="removeQueryTabHistory" @open="openHistoryQuery" @save="saveHistoryQuery" @remove="removeHistoryQuery" />
+          <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`table:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" @open-database="openDatabaseFromTable" @open-table="openDatabaseTable" />
+          <DatabaseWorkspace v-else-if="activeTab.type === 'database' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`database:${activeTab.id}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :active-section="activeTab.databaseSection" @table="openDatabaseTable" @update:active-section="updateDatabaseSection" />
+          <ConnectionHomeWorkspace v-else-if="activeTab.type === 'connection-home' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`connection-home:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" @edit="editing = $event; showConnection = true" @new-query="openSQLForConnection($event.id)" @stats="openStats" @database="openDatabase" />
+          <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`stats:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
+          <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" @update:section="updateSettingsSection" />
+          <SqlWorkspace v-else ref="sqlWorkspace" :key="activeTab.id" :tab="activeTab" :connections="workspace.connections" :query-connection="queryConnection" :query-connection-id="queryConnectionId" :show-a-i-agent="showAIAgent" :ai-configured="aiConfigured" :editor-height="editorHeight" :editor-width="editorWidth" :running="running" :loading-more-rows="loadingMoreRows" :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :result-summary="activeResultSummary" @update-sql="updateSQL" @update-execution-connection="updateExecutionConnection" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @new-query="newSQL" @save-query="saveQuery" @ai-status="updateAIStatus" @hide-a-i-agent="hideAIAgent" @show-a-i-agent="showHiddenAIAgent" @update-editor-height="editorHeight = $event" @update-editor-width="editorWidth = $event" @select-result-tab="activeResultTabIds[activeTab.id] = $event" @close-result-tab="closeResultTab(activeTab.id, $event)" @create-result-tab="createResultTab(activeTab.id)" @copy-result="copyActiveResult" @save-result="saveActiveResultEdits" @load-more="loadMoreRows" />
+        </KeepAlive>
       </div>
     </section>
     <ConnectionModal v-model="showConnection" :connection="editing" @saved="saved" @deleted="deleted" />

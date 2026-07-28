@@ -51,7 +51,7 @@ function savedTabs(value: unknown): WorkspaceTab[] | undefined {
       && (candidate.queryNumber === undefined || (typeof candidate.queryNumber === 'number' && Number.isInteger(candidate.queryNumber) && candidate.queryNumber > 0))
       && (candidate.tableSection === undefined || validTableSections.has(candidate.tableSection))
       && (candidate.databaseSection === undefined || validDatabaseSections.has(candidate.databaseSection))
-      && (candidate.settingsSection === undefined || candidate.settingsSection === 'appearance' || candidate.settingsSection === 'shortcuts' || candidate.settingsSection === 'connections' || candidate.settingsSection === 'ai' || candidate.settingsSection === 'audit' || candidate.settingsSection === 'backup')
+      && (candidate.settingsSection === undefined || candidate.settingsSection === 'appearance' || candidate.settingsSection === 'shortcuts' || candidate.settingsSection === 'connections' || candidate.settingsSection === 'ai' || candidate.settingsSection === 'audit' || candidate.settingsSection === 'backup' || candidate.settingsSection === 'about')
       && (candidate.aiChat === undefined || isAIAgentChat(candidate.aiChat))
       && (candidate.aiJobId === undefined || typeof candidate.aiJobId === 'string')
       && (candidate.aiStatus === undefined || candidate.aiStatus === 'running' || candidate.aiStatus === 'complete')
@@ -247,7 +247,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
   function removeQueryTabHistory(id: string) { queryTabHistory.value = queryTabHistory.value.filter((tab) => tab.id !== id) }
   function closeTabs(ids: Set<string>) {
-    const closableIds = new Set([...ids].filter((id) => id !== homeTabId))
+    const closableIds = new Set(ids)
     if (!closableIds.size) return
 
     const activeIndex = tabs.value.findIndex((tab) => tab.id === activeTabId.value)
@@ -255,7 +255,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const fallbackTabId = activeIndex < 0
       ? tabs.value.find((tab) => !closableIds.has(tab.id))?.id || ''
       : [...tabs.value.slice(0, activeIndex)].reverse().find((tab) => !closableIds.has(tab.id))?.id || tabs.value.slice(activeIndex + 1).find((tab) => !closableIds.has(tab.id))?.id || ''
-    tabs.value = tabs.value.filter((tab) => !closableIds.has(tab.id))
+    const remainingTabs = tabs.value.filter((tab) => !closableIds.has(tab.id))
+    if (!remainingTabs.length) {
+      tabs.value = defaultTabs()
+      activeTabId.value = homeTabId
+      return
+    }
+    tabs.value = remainingTabs
 
     if (activeWasClosed) activeTabId.value = fallbackTabId
   }

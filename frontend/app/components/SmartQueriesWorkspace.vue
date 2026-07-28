@@ -4,7 +4,7 @@ import type { Connection, QueryResult, SmartQuery } from '~/types/database'
 type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[] }
 
 const props = defineProps<{ queries: SmartQuery[]; connections: Connection[]; resultTabs: SmartResultTab[]; activeResultTabId?: string; loading?: boolean; loadingMore?: boolean }>()
-const emit = defineEmits<{ run: [query: SmartQuery, values: Record<string, string>, newTab: boolean]; remove: [id: string]; update: [id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>]; openEditor: [query: SmartQuery]; selectResultTab: [id: string]; closeResultTab: [id: string]; copyResult: [id: string]; saveResult: [id: string, result: QueryResult]; loadMore: [] }>()
+const emit = defineEmits<{ run: [query: SmartQuery, values: Record<string, string>, newTab: boolean]; remove: [id: string]; update: [id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql' | 'parameters'>]; openEditor: [query: SmartQuery]; selectResultTab: [id: string]; closeResultTab: [id: string]; copyResult: [id: string]; saveResult: [id: string, result: QueryResult]; loadMore: [] }>()
 const { t } = useI18n()
 const values = reactive<Record<string, Record<string, string>>>({})
 const commandPressed = ref(false)
@@ -12,10 +12,12 @@ const editing = ref<SmartQuery>()
 const editTitle = ref('')
 const editDescription = ref('')
 const editSQL = ref('')
+const editDefaultValues = ref<Record<string, string>>({})
 const resultHeight = ref(46)
 const activeResultTab = computed(() => props.resultTabs.find((tab) => tab.id === props.activeResultTabId))
 const hasResults = computed(() => props.resultTabs.some((tab) => Boolean(tab.result)))
 const resultSummary = computed(() => activeResultTab.value?.result ? t('query.rowsSummary', { rows: activeResultTab.value.result.rowCount, time: activeResultTab.value.result.executionTimeMs, affected: activeResultTab.value.result.affectedRows }) : t('query.queryResults'))
+const editParameterKeys = computed(() => [...editSQL.value.matchAll(/:([A-Za-z][A-Za-z0-9_]*)\b/g)].flatMap((match) => match[1] ? [match[1]] : []).filter((key, position, all) => all.indexOf(key) === position))
 
 function queryValues(query: SmartQuery) {
   return values[query.id] ??= Object.fromEntries(query.parameters.map((parameter) => [parameter.key, parameter.defaultValue]))
@@ -26,11 +28,21 @@ function openEdit(query: SmartQuery) {
   editTitle.value = query.title
   editDescription.value = query.description
   editSQL.value = query.sql
+  editDefaultValues.value = Object.fromEntries(query.parameters.map((parameter) => [parameter.key, parameter.defaultValue]))
 }
-function editChanges() { return { title: editTitle.value.trim(), description: editDescription.value.trim(), sql: editSQL.value.trim() } }
+function editChanges() {
+  return {
+    title: editTitle.value.trim(),
+    description: editDescription.value.trim(),
+    sql: editSQL.value.trim(),
+    parameters: editParameterKeys.value.map((key) => ({ key, defaultValue: editDefaultValues.value[key] ?? '' })),
+  }
+}
 function saveEdit() {
   if (!editing.value || !editTitle.value.trim() || !editDescription.value.trim() || !editSQL.value.trim()) return
-  emit('update', editing.value.id, editChanges())
+  const changes = editChanges()
+  values[editing.value.id] = Object.fromEntries(changes.parameters.map((parameter) => [parameter.key, parameter.defaultValue]))
+  emit('update', editing.value.id, changes)
   editing.value = undefined
 }
 function removeEditing() {
@@ -40,8 +52,9 @@ function removeEditing() {
 }
 function openInEditor() {
   if (!editing.value || !editTitle.value.trim() || !editDescription.value.trim() || !editSQL.value.trim()) return
-  const query = { ...editing.value, ...editChanges() }
-  emit('update', query.id, editChanges())
+  const changes = editChanges()
+  const query = { ...editing.value, ...changes }
+  emit('update', query.id, changes)
   emit('openEditor', query)
   editing.value = undefined
 }
@@ -101,7 +114,7 @@ onBeforeUnmount(() => {
     <div v-if="editing" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm" @mousedown.self="editing = undefined">
       <form class="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl" @submit.prevent="saveEdit">
         <div class="flex items-start justify-between gap-4 border-b border-line p-5"><div><h2 class="font-semibold">{{ t('smartQueries.editTitle') }}</h2><p class="mt-1 text-sm text-muted">{{ t('smartQueries.editDescription') }}</p></div><button type="button" class="rounded p-1 text-muted hover:bg-canvas" :aria-label="t('common.close')" @click="editing = undefined"><Icon name="lucide:x" class="h-4 w-4" aria-hidden="true" /></button></div>
-        <div class="scrollbar grid gap-4 overflow-auto p-5"><label class="block text-sm font-medium">{{ t('smartQueries.nameLabel') }}<input v-model="editTitle" required class="mt-1 h-10 w-full rounded-md border border-line bg-canvas px-3 text-sm outline-none focus:border-accent" ></label><label class="block text-sm font-medium">{{ t('smartQueries.descriptionLabel') }}<textarea v-model="editDescription" required rows="3" class="mt-1 w-full rounded-md border border-line bg-canvas px-3 py-2 text-sm outline-none focus:border-accent" /></label><label class="block text-sm font-medium">{{ t('smartQueries.sqlLabel') }}<textarea v-model="editSQL" required rows="12" spellcheck="false" class="mt-1 w-full rounded-md border border-line bg-canvas px-3 py-2 font-mono text-xs leading-5 outline-none focus:border-accent" /></label></div>
+        <div class="scrollbar grid gap-4 overflow-auto p-5"><label class="block text-sm font-medium">{{ t('smartQueries.nameLabel') }}<input v-model="editTitle" required class="mt-1 h-10 w-full rounded-md border border-line bg-canvas px-3 text-sm outline-none focus:border-accent" ></label><label class="block text-sm font-medium">{{ t('smartQueries.descriptionLabel') }}<textarea v-model="editDescription" required rows="3" class="mt-1 w-full rounded-md border border-line bg-canvas px-3 py-2 text-sm outline-none focus:border-accent" /></label><label class="block text-sm font-medium">{{ t('smartQueries.sqlLabel') }}<textarea v-model="editSQL" required rows="12" spellcheck="false" class="mt-1 w-full rounded-md border border-line bg-canvas px-3 py-2 font-mono text-xs leading-5 outline-none focus:border-accent" /></label><fieldset v-if="editParameterKeys.length" class="rounded-lg border border-line p-4"><legend class="px-1 text-sm font-medium">{{ t('smartQueries.defaultValuesLabel') }}</legend><div class="mt-2 grid gap-3 sm:grid-cols-2"><label v-for="key in editParameterKeys" :key="key" class="block text-sm font-medium text-muted"><span class="mb-1 block font-mono text-xs text-ink">{{ key }}</span><input v-model="editDefaultValues[key]" type="text" class="h-10 w-full rounded-md border border-line bg-canvas px-3 text-sm text-ink outline-none focus:border-accent" ></label></div></fieldset></div>
         <div class="flex flex-col-reverse gap-2 border-t border-line bg-canvas/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><button type="button" class="rounded-lg border border-line px-3.5 py-2 text-sm font-medium hover:bg-panel" @click="openInEditor">{{ t('smartQueries.openInEditor') }}</button><div class="flex gap-2"><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-rose-500 hover:bg-rose-500/10" @click="removeEditing">{{ t('smartQueries.delete') }}</button><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-muted hover:bg-panel" @click="editing = undefined">{{ t('connection.cancel') }}</button><button type="submit" class="rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-white hover:bg-accent/90">{{ t('common.save') }}</button></div></div>
       </form>
     </div>

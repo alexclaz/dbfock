@@ -301,12 +301,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     smartQueries.value.unshift(smart)
     return smart
   }
-  async function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>) {
+  async function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql' | 'parameters'>) {
     const index = smartQueries.value.findIndex((query) => query.id === id)
     if (index < 0) return
     const current = smartQueries.value[index]
     if (!current) return
-    const parameterByKey = new Map(current.parameters.map((parameter) => [parameter.key, parameter]))
+    const parameterByKey = new Map(changes.parameters.map((parameter) => [parameter.key, parameter]))
     const keys = [...changes.sql.matchAll(/:([A-Za-z][A-Za-z0-9_]*)\b/g)].flatMap((match) => match[1] ? [match[1]] : []).filter((key, position, all) => all.indexOf(key) === position)
     const updated: SmartQuery = {
       ...current,

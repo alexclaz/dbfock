@@ -418,7 +418,7 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
   } catch (error: any) { smartQueryError.value = error.message }
   finally { smartQueryRunning.value = false }
 }
-async function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql'>) { await workspace.updateSmartQuery(id, changes) }
+async function updateSmartQuery(id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql' | 'parameters'>) { await workspace.updateSmartQuery(id, changes) }
 function openSmartQueryInEditor(query: SmartQuery) {
   workspace.activeConnectionId = query.connectionId
   workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: query.title, type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql })

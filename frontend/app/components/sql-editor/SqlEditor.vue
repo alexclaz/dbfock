@@ -563,11 +563,19 @@ function createEditorState(doc: string) {
   return EditorState.create({ doc, extensions: [EditorState.allowMultipleSelections.of(true), EditorView.clickAddsSelectionRange.of((event) => event.altKey), lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, { key: 'Mod-Shift-l', run: selectAllOccurrences }, { key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-h', run: () => { focusReplace(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { const preferredSearchMatchFrom = nextSearchMatchFrom; nextSearchMatchFrom = undefined; syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { if (preferredSearchMatchFrom === undefined) updateSearch(); else { updateSearchHighlights(); selectSearchMatchAtOrAfter(preferredSearchMatchFrom) }; updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
 }
 
+function persistEditorViewport(tabId: string, viewport: { top: number; left: number }) {
+  if (import.meta.client) sessionStorage.setItem(`dbfock.sql-editor-viewport:${tabId}`, JSON.stringify(viewport))
+}
+
+// Vue's <KeepAlive> detaches the editor's DOM before the `deactivated` hook
+// runs, so `scrollDOM` may already be disconnected here and would report a
+// stale scrollTop/scrollLeft of 0. Skip the read in that case rather than
+// clobbering the last known-good viewport with a bogus zero.
 function rememberEditorViewport(tabId = currentTabId) {
-  if (!view || !tabId) return
+  if (!view || !tabId || !view.scrollDOM.isConnected) return
   const viewport = { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft }
   editorViewports.set(tabId, viewport)
-  if (import.meta.client) sessionStorage.setItem(`dbfock.sql-editor-viewport:${tabId}`, JSON.stringify(viewport))
+  persistEditorViewport(tabId, viewport)
 }
 
 function restoreEditorViewport(tabId: string) {
@@ -589,7 +597,7 @@ function restoreEditorViewport(tabId: string) {
 }
 
 function rememberEditorScroll() {
-  if (!view || !currentTabId) return
+  if (!view || !currentTabId || !view.scrollDOM.isConnected) return
   const viewport = { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft }
   editorViewports.set(currentTabId, viewport)
   emit('viewport', viewport)
@@ -625,7 +633,12 @@ onMounted(() => {
   loadDatabases()
 })
 onActivated(() => { restoreEditorViewport(currentTabId) })
-onDeactivated(() => { if (view) { editorStates.set(currentTabId, view.state); rememberEditorViewport() } })
+onDeactivated(() => {
+  if (!view || !currentTabId) return
+  editorStates.set(currentTabId, view.state)
+  const viewport = editorViewports.get(currentTabId)
+  if (viewport) persistEditorViewport(currentTabId, viewport)
+})
 onBeforeUnmount(() => { if (viewportPersistTimer) clearTimeout(viewportPersistTimer); if (view) { editorStates.set(currentTabId, view.state); rememberEditorViewport(); view.scrollDOM.removeEventListener('scroll', rememberEditorScroll) }; view?.destroy(); searchControls?.remove(); document.removeEventListener('pointerdown', closeContextMenuOnPointerDown); document.removeEventListener('keydown', closeContextMenuOnKeyDown) })
 </script>
 

@@ -19,7 +19,8 @@ const displayResult = computed(() => props.editing ? draft.value ?? props.result
 const rows = computed(() => displayResult.value?.rows ?? [])
 const formattedRows = computed(() => props.view === 'csv' ? queryResultAsCSV(displayResult.value) : queryResultAsJSON(displayResult.value))
 const highlightedJSON = computed(() => highlightJSON(formattedRows.value))
-const canSave = computed(() => !jsonError.value)
+const isDirty = computed(() => Boolean(draft.value) && JSON.stringify(draft.value!.rows) !== JSON.stringify(props.result?.rows))
+const canSave = computed(() => !jsonError.value && isDirty.value)
 const canSort = computed(() => props.sortable || props.sortDirection !== undefined)
 
 function display(value: unknown) { if (value === null) return 'NULL'; if (typeof value === 'boolean') return value ? 'true' : 'false'; return String(value) }

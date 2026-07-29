@@ -17,6 +17,7 @@ type SmartResultTab = ResultTab & { connectionId: string; smartQueryId: string }
 type AISettings = { configured: boolean }
 type PendingSave = { initialValue: string; save: (name: string) => Promise<boolean>; resolve: (saved: boolean) => void }
 type PendingConfirmation = { title: string; description: string; confirmLabel: string; cancelLabel?: string; tone?: 'default' | 'danger'; resolve: (confirmed: boolean) => void }
+type ActiveQuery = { connectionId: string; requestId: string; controller: AbortController }
 
 const workspace = useWorkspaceStore()
 const api = useApi()
@@ -24,7 +25,8 @@ const { t } = useI18n()
 const { success: notifySuccess, error: notifyError } = useToast()
 const showConnection = ref(false)
 const editing = ref<Connection>()
-const running = ref(false)
+const runningQueryCount = ref(0)
+const running = computed(() => runningQueryCount.value > 0)
 const loadingMoreRows = ref(false)
 const queryError = ref('')
 const showGlobalSearch = ref(false)
@@ -50,10 +52,13 @@ const recentlyClosedTabs = ref<WorkspaceTab[]>([])
 const pendingSave = ref<PendingSave>()
 const pendingConfirmation = ref<PendingConfirmation>()
 let nextResultTabId = 0
+let nextQueryRequestId = 0
 const smartQueryGenerations = new Set<string>()
 const smartQueryRunning = ref(false)
 const smartQueryError = ref('')
 const smartQueryErrorConnectionId = ref<string>()
+const activeQueries = new Map<string, ActiveQuery>()
+const queryGenerations = new Map<string, number>()
 
 const activeTab = computed<WorkspaceTab>(() => workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0] ?? { id: 'empty', title: '', type: 'empty' })
 const activeResultTabs = computed(() => resultTabs[activeTab.value.id] || [])
@@ -276,6 +281,27 @@ function createResultTab(workspaceTabId: string) {
 function currentOrNewResultTab(workspaceTabId: string) {
   return (resultTabs[workspaceTabId] || []).find((tab) => tab.id === activeResultTabIds[workspaceTabId]) || createResultTab(workspaceTabId)
 }
+function nextQueryGeneration(resultTabId: string) {
+  const generation = (queryGenerations.get(resultTabId) ?? 0) + 1
+  queryGenerations.set(resultTabId, generation)
+  return generation
+}
+function isCurrentQuery(resultTabId: string, generation: number, requestId: string) {
+  return queryGenerations.get(resultTabId) === generation && activeQueries.get(resultTabId)?.requestId === requestId
+}
+async function cancelActiveQuery(resultTabId: string) {
+  const activeQuery = activeQueries.get(resultTabId)
+  if (!activeQuery) return
+  activeQueries.delete(resultTabId)
+  runningQueryCount.value = Math.max(0, runningQueryCount.value - 1)
+  try {
+    await api(`/connections/${activeQuery.connectionId}/query/cancel`, { method: 'POST', body: { requestId: activeQuery.requestId } })
+  } catch {
+    // The request may have already completed or been cancelled by the browser.
+  } finally {
+    activeQuery.controller.abort()
+  }
+}
 function closeResultTab(workspaceTabId: string, resultTabId: string) {
   const tabs = resultTabs[workspaceTabId]
   if (!tabs) return
@@ -283,6 +309,8 @@ function closeResultTab(workspaceTabId: string, resultTabId: string) {
   if (index < 0) return
   tabs.splice(index, 1)
   delete pagedQueries[resultTabId]
+  nextQueryGeneration(resultTabId)
+  void cancelActiveQuery(resultTabId)
   if (activeResultTabIds[workspaceTabId] === resultTabId) activeResultTabIds[workspaceTabId] = tabs[Math.max(0, index - 1)]?.id
 }
 
@@ -295,19 +323,37 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
     return
   }
   const resultTab = newResultTab ? createResultTab(tab.id) : currentOrNewResultTab(tab.id)
-  running.value = true
+  const generation = nextQueryGeneration(resultTab.id)
+  await cancelActiveQuery(resultTab.id)
+  if (queryGenerations.get(resultTab.id) !== generation) return
+  const requestId = `query:${resultTab.id}:${++nextQueryRequestId}`
+  const controller = new AbortController()
+  activeQueries.set(resultTab.id, { connectionId, requestId, controller })
+  runningQueryCount.value += 1
+  resultTab.editing = false
+  resultTab.sources = undefined
   queryError.value = ''
   delete pagedQueries[resultTab.id]
   try {
     const pageable = /^\s*select\b/i.test(sql)
-    const result = await api<QueryResult>(`/connections/${connectionId}/query`, { method: 'POST', body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId: resultTab.id } : { sql, requestId: resultTab.id } })
+    const result = await api<QueryResult>(`/connections/${connectionId}/query`, { method: 'POST', signal: controller.signal, body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId } : { sql, requestId } })
+    if (!isCurrentQuery(resultTab.id, generation, requestId)) return
     resultTab.result = pageable ? pageResult(result) : result
-    resultTab.sources = await editableSources(sql, connection, resultTab.result)
-    if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId: resultTab.id }
+    const resultForSources = resultTab.result
+    const sources = await editableSources(sql, connection, resultForSources)
+    if (!isCurrentQuery(resultTab.id, generation, requestId) || resultTab.result !== resultForSources) return
+    resultTab.sources = sources
+    if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId }
     updateTransactionStatus(connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
-  } catch (error: any) { queryError.value = error.message }
-  finally { running.value = false }
+  } catch (error: any) {
+    if (!controller.signal.aborted && isCurrentQuery(resultTab.id, generation, requestId)) queryError.value = error.message
+  } finally {
+    if (activeQueries.get(resultTab.id)?.requestId === requestId) {
+      activeQueries.delete(resultTab.id)
+      runningQueryCount.value = Math.max(0, runningQueryCount.value - 1)
+    }
+  }
 }
 
 async function createSmartQuery(connectionId: string, sql: string) {
@@ -459,16 +505,20 @@ async function editableSources(sql: string, connection: Connection, result: Quer
   }
 }
 async function saveResultEdits(resultTab: ResultTab, edited: QueryResult) {
-  if (!resultTab.result || !resultTab.sources?.length) { notifyError(t('grid.inlineEditUnsupported')); return }
+  const sources = resultTab.sources
+  if (!resultTab.result || !sources?.length) { notifyError(t('grid.inlineEditUnsupported')); return }
+  const originalResult = resultTab.result
   try {
     let transaction: QueryResult | undefined
-    for (const source of resultTab.sources) {
-      const updates = queryResultEdits(resultTab.result, edited, { editableColumns: source.columns, keyColumns: source.primaryKey })
+    for (const source of sources) {
+      const updates = queryResultEdits(originalResult, edited, { editableColumns: source.columns, keyColumns: source.primaryKey })
       for (const update of updates) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/update`, { method: 'POST', body: { database: source.database, table: source.table, ...update } })
     }
-    resultTab.result = edited
-    resultTab.editing = false
-    if (transaction) updateTransactionStatus(resultTab.sources[0]!.connectionId, transaction.transactionPending, transaction.pendingStatements)
+    if (resultTab.result === originalResult) {
+      resultTab.result = edited
+      resultTab.editing = false
+    }
+    if (transaction) updateTransactionStatus(sources[0]!.connectionId, transaction.transactionPending, transaction.pendingStatements)
     await loadHistory()
   } catch (error: any) { notifyError(error.message) }
 }

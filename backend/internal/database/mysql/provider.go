@@ -47,6 +47,7 @@ func (p *Provider) open(c models.Connection) (*sql.DB, error) {
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
 	cfg.AllowNativePasswords = true
+	cfg.MultiStatements = true
 	// MySQL does not accept server-side parameter markers in CREATE/ALTER USER
 	// authentication clauses. The driver safely expands those values before the
 	// request is sent, so account passwords remain parameterized at this layer.
@@ -1051,7 +1052,7 @@ func executesWithoutRows(statement string) bool {
 	if len(parts) == 0 {
 		return false
 	}
-	return parts[0] == "INSERT" || parts[0] == "UPDATE" || parts[0] == "DELETE"
+	return parts[0] == "INSERT" || parts[0] == "UPDATE" || parts[0] == "DELETE" || parts[0] == "SET"
 }
 
 // limitSelectRows makes the result cap effective in MySQL, rather than merely

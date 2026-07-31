@@ -22,7 +22,7 @@ const providerOptions: ProviderOption[] = [
   { value: 'anthropic', label: 'Anthropic', defaultModel: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com/v1', apiKeyHint: 'sk-ant-…' },
   { value: 'ollama', label: 'Ollama', defaultModel: 'llama3.2', baseUrl: 'http://localhost:11434', apiKeyHint: '' },
 ]
-const appVersion = '0.5.6'
+const appVersion = '0.5.7'
 const license = 'MIT'
 const githubUrl = 'https://github.com/alexclaz/dbfock'
 

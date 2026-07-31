@@ -23,6 +23,16 @@ function confirmLeaving(event: BeforeUnloadEvent) {
   event.returnValue = true
 }
 
+// Select-all is only meaningful inside editable fields; elsewhere it would highlight the whole UI.
+const selectAllAllowed = 'input, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'
+
+function blockSelectAll(event: KeyboardEvent) {
+  if (event.altKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'a') return
+  const target = event.target as HTMLElement | null
+  if (target?.closest?.(selectAllAllowed)) return
+  event.preventDefault()
+}
+
 function applyTheme() {
   if (!import.meta.client) return
   const dark = theme.value !== 'dbfock-light' && theme.value !== 'github-light' && theme.value !== 'vscode-light'
@@ -51,6 +61,7 @@ onMounted(() => {
   else if (saved === 'dark') theme.value = 'vscode-dark'
   else if (saved === 'auto' || saved === 'system') theme.value = 'vscode-dark'
   window.addEventListener('beforeunload', confirmLeaving)
+  window.addEventListener('keydown', blockSelectAll)
   applyTheme()
   void checkForUpdate().then((available) => {
     if (!available) return
@@ -58,7 +69,10 @@ onMounted(() => {
     else info(t('update.availableNotice', { version: available.latestVersion }))
   })
 })
-onBeforeUnmount(() => window.removeEventListener('beforeunload', confirmLeaving))
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', confirmLeaving)
+  window.removeEventListener('keydown', blockSelectAll)
+})
 
 function prepareUpdate() {
   if (openWailsUpdate()) info(t('update.updateOpening'))

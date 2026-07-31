@@ -64,7 +64,7 @@ export function parseTableImport(contents: string, filename = ''): ImportedTable
   return { columns: headers, rows }
 }
 
-function quoteIdentifier(identifier: string) {
+export function quoteIdentifier(identifier: string) {
   return `\`${identifier.replaceAll('`', '``')}\``
 }
 

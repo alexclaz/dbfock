@@ -108,6 +108,7 @@ func (a *API) Router() http.Handler {
 				r.Get("/databases/{database}/tables/{table}/structure", a.structure)
 				r.Get("/databases/{database}/tables/{table}/data", a.tableData)
 				r.Post("/query", a.query)
+				r.Post("/databases/{database}/dump/import", a.importDatabaseDump)
 				r.Post("/dump/import", a.importDump)
 				r.Post("/rows/update", a.updateRow)
 				r.Post("/query/cancel", a.cancelQuery)
@@ -524,7 +525,9 @@ type queryRequest struct {
 	HistorySQL  string `json:"historySql"`
 	SkipHistory bool   `json:"skipHistory"`
 }
-type dumpImportRequest struct { SQL string `json:"sql"` }
+type dumpImportRequest struct {
+	SQL string `json:"sql"`
+}
 
 type rowUpdateRequest struct {
 	Database string         `json:"database"`
@@ -671,15 +674,82 @@ func (a *API) query(w http.ResponseWriter, r *http.Request) {
 func (a *API) importDump(w http.ResponseWriter, r *http.Request) {
 	var req dumpImportRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 50<<20))
-	if err := dec.Decode(&req); err != nil { fail(w, fmt.Errorf("invalid dump: %w", err)); return }
-	if strings.TrimSpace(req.SQL) == "" { fail(w, fmt.Errorf("dump is empty")); return }
-	c, err := a.connection(r.Context()); if err != nil { fail(w, err); return }
-	if err = a.requireConnected(c.ID); err != nil { fail(w, err); return }
-	p, err := a.providers.Get(c.Driver); if err != nil { fail(w, err); return }
-	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c)); defer cancel()
+	if err := dec.Decode(&req); err != nil {
+		fail(w, fmt.Errorf("invalid dump: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.SQL) == "" {
+		fail(w, fmt.Errorf("dump is empty"))
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err = a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	p, err := a.providers.Get(c.Driver)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
 	result, err := p.Query(ctx, c, req.SQL, a.config.MaxQueryRows)
-	if err != nil { fail(w, err); return }
+	if err != nil {
+		fail(w, err)
+		return
+	}
 	_ = a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Import SQL dump", Type: "IMPORT", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs, AffectedRows: result.AffectedRows})
+	respond(w, http.StatusOK, result)
+}
+func (a *API) importDatabaseDump(w http.ResponseWriter, r *http.Request) {
+	var req dumpImportRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 50<<20))
+	if err := dec.Decode(&req); err != nil {
+		fail(w, fmt.Errorf("invalid dump: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.SQL) == "" {
+		fail(w, fmt.Errorf("dump is empty"))
+		return
+	}
+	databaseName := chi.URLParam(r, "database")
+	if err := database.ValidateIdentifier(databaseName); err != nil {
+		fail(w, err)
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err = a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	p, err := a.providers.Get(c.Driver)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	restorer, ok := p.(database.DatabaseDumpRestorer)
+	if !ok {
+		fail(w, fmt.Errorf("database dump imports are not supported by %s", c.Driver))
+		return
+	}
+	a.rollbackPendingTransaction(r.Context(), c.ID)
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	result, err := restorer.RestoreDatabase(ctx, c, databaseName, req.SQL)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	_ = a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Import SQL dump into " + databaseName, Type: "IMPORT", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs})
 	respond(w, http.StatusOK, result)
 }
 func (a *API) transactionStatus(w http.ResponseWriter, r *http.Request) {

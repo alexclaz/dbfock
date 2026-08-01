@@ -73,6 +73,46 @@ const messages: Record<Locale, Record<string, string>> = {
   },
 }
 
+Object.assign(messages['pt-BR'], {
+  'connectionHome.toolsDescription': 'Gere dumps SQL desta conexão.',
+  'connectionHome.dumpDescription': 'Baixe a estrutura e os dados dos bancos selecionados. Cada banco gera seu próprio arquivo SQL.',
+  'connectionHome.dumpCreated': '{count} dump(s) criado(s).',
+  'database.tools.description': 'Exporte, importe, migre dados e execute a manutenção de todas as tabelas deste banco.',
+  'database.tools.exportTitle': 'Exportar banco',
+  'database.tools.exportDescription': 'Baixe este banco em um arquivo SQL, com estrutura e dados.',
+  'database.tools.exportStructureOnly': 'Exportar apenas a estrutura',
+  'database.tools.exportStructureOnlyDescription': 'Não inclui os dados das tabelas.',
+  'database.tools.exportSuccess': '{count} tabela(s) exportada(s).',
+  'database.tools.importTitle': 'Importar dump',
+  'database.tools.importDescription': 'O banco {database} será apagado e recriado antes da importação.',
+  'database.tools.import': 'Escolher arquivo SQL',
+  'database.tools.importing': 'Importando…',
+  'database.tools.importConfirmTitle': 'Importar dump neste banco?',
+  'database.tools.importConfirm': 'O banco {database} e todos os seus dados serão apagados e recriados antes de importar o arquivo. Esta ação não pode ser desfeita.',
+  'database.tools.recreateAndImport': 'Recriar e importar',
+  'database.tools.importSuccess': 'Dump importado em {database}.',
+})
+
+Object.assign(messages['en-US'], {
+  'connectionHome.toolsDescription': 'Create SQL dumps for this connection.',
+  'connectionHome.dumpDescription': 'Download the structure and data of the selected databases. Each database gets its own SQL file.',
+  'connectionHome.dumpCreated': '{count} dump(s) created.',
+  'database.tools.description': 'Export, import, migrate data, and maintain every table in this database.',
+  'database.tools.exportTitle': 'Export database',
+  'database.tools.exportDescription': 'Download this database as an SQL file, with its structure and data.',
+  'database.tools.exportStructureOnly': 'Export structure only',
+  'database.tools.exportStructureOnlyDescription': 'Does not include table data.',
+  'database.tools.exportSuccess': '{count} table(s) exported.',
+  'database.tools.importTitle': 'Import dump',
+  'database.tools.importDescription': 'Database {database} will be deleted and recreated before importing.',
+  'database.tools.import': 'Choose SQL file',
+  'database.tools.importing': 'Importing…',
+  'database.tools.importConfirmTitle': 'Import dump into this database?',
+  'database.tools.importConfirm': 'Database {database} and all its data will be deleted and recreated before importing the file. This cannot be undone.',
+  'database.tools.recreateAndImport': 'Recreate and import',
+  'database.tools.importSuccess': 'Dump imported into {database}.',
+})
+
 const updateMessages: Record<Locale, Record<string, string>> = {
   'pt-BR': {
     'update.availableDescription': 'A versão {version} está disponível.',

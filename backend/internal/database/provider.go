@@ -59,6 +59,13 @@ type UserManager interface {
 	DeleteUser(context.Context, models.Connection, string, string) error
 }
 
+// DatabaseDumpRestorer restores a SQL dump into one named database. The
+// implementation is responsible for recreating the target first, so callers
+// never need to issue a destructive drop as a separate connection request.
+type DatabaseDumpRestorer interface {
+	RestoreDatabase(context.Context, models.Connection, string, string) (*models.QueryResult, error)
+}
+
 type Registry struct{ providers map[string]Provider }
 
 func NewRegistry() *Registry                                  { return &Registry{providers: map[string]Provider{}} }

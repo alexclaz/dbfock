@@ -3,7 +3,7 @@ import type { DatabaseInfo, QueryResult, SchemaDiagram, TableInfo, TableStructur
 import { tableInsertStatements } from '~/utils/tableTransfer'
 
 type DatabaseSection = 'tables' | 'diagram' | 'tools'
-type DatabaseToolsSection = 'export' | 'migration' | 'maintenance' | 'danger'
+type DatabaseToolsSection = 'export' | 'import' | 'migration' | 'maintenance' | 'danger'
 
 const props = defineProps<{ connectionId: string; database: string; activeSection?: DatabaseSection }>()
 const emit = defineEmits<{ table: [table: string]; 'update:activeSection': [value: DatabaseSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; databaseDeleted: [connectionId: string, database: string] }>()
@@ -18,6 +18,11 @@ const section = ref<DatabaseSection>(props.activeSection === 'diagram' || props.
 const diagram = ref<SchemaDiagram>()
 const diagramLoading = ref(false)
 const exporting = ref(false)
+const exportStructureOnly = ref(false)
+const dumpInput = ref<HTMLInputElement>()
+const selectedDumpFile = ref<File>()
+const importingDump = ref(false)
+const showImportConfirmation = ref(false)
 const maintenanceRunning = ref('')
 const maintenanceResult = ref<QueryResult>()
 const toolsSection = ref<DatabaseToolsSection>('export')
@@ -61,24 +66,62 @@ function createTableSQL(ddl: string, table: string) {
   if (created === ddl) throw new Error(t('database.tools.migrationCreateError', { table }))
   return created
 }
-function downloadSchema(contents: string) {
+function downloadDump(contents: string) {
   const link = document.createElement('a')
   link.href = URL.createObjectURL(new Blob([contents], { type: 'application/sql;charset=utf-8' }))
-  link.download = `dbfock-${props.database}-${new Date().toISOString().slice(0, 10)}.sql`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
+  link.download = `dbfock-dump-${props.database}-${new Date().toISOString().slice(0, 10)}.sql`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
   link.click()
   URL.revokeObjectURL(link.href)
 }
-async function exportSchema() {
+async function exportDatabase() {
   if (exporting.value) return
   exporting.value = true
   try {
     const list = tables.value ?? await api<TableInfo[]>(`/connections/${props.connectionId}/databases/${encodeURIComponent(props.database)}/tables`)
     const structures = await Promise.all(list.map((table) => api<TableStructure>(`/connections/${props.connectionId}/databases/${encodeURIComponent(props.database)}/tables/${encodeURIComponent(table.name)}/structure`)))
     const databaseName = `\`${props.database.replaceAll('`', '``')}\``
-    downloadSchema([`CREATE DATABASE IF NOT EXISTS ${databaseName};`, `USE ${databaseName};`, ...structures.map((structure) => structure.ddl.trim().replace(/;?$/, ';'))].join('\n\n'))
+    const script = ['SET FOREIGN_KEY_CHECKS=0', `CREATE DATABASE IF NOT EXISTS ${databaseName}`, `USE ${databaseName}`, ...structures.map((structure) => structure.ddl.trim().replace(/;?$/, ''))]
+    if (!exportStructureOnly.value) {
+      for (let index = 0; index < list.length; index++) {
+        const table = list[index]!
+        const structure = structures[index]!
+        const columnTypes = Object.fromEntries(structure.columns.map((column) => [column.name, column.databaseType]))
+        let offset = 0
+        let hasMore = true
+        while (hasMore) {
+          const page = await api<QueryResult>(`/connections/${props.connectionId}/databases/${encodeURIComponent(props.database)}/tables/${encodeURIComponent(table.name)}/data?limit=500&offset=${offset}`)
+          script.push(...tableInsertStatements(props.database, table.name, page.columns.map((column) => column.name), page.rows.map((row) => page.columns.map((column) => row[column.name])), 80_000, columnTypes))
+          offset += page.rows.length
+          hasMore = page.hasMore
+        }
+      }
+    }
+    script.push('SET FOREIGN_KEY_CHECKS=1')
+    downloadDump(`${script.join(';\n')};\n`)
     notifySuccess(t('database.tools.exportSuccess', { count: structures.length }))
   } catch (cause: unknown) { notifyError(messageFor(cause)) }
   finally { exporting.value = false }
+}
+function requestDumpImport(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || importingDump.value) return
+  selectedDumpFile.value = file
+  showImportConfirmation.value = true
+  input.value = ''
+}
+async function importDatabaseDump() {
+  const file = selectedDumpFile.value
+  showImportConfirmation.value = false
+  if (!file || importingDump.value) return
+  importingDump.value = true
+  try {
+    await api(`/connections/${props.connectionId}/databases/${encodeURIComponent(props.database)}/dump/import`, { method: 'POST', body: { sql: await file.text() } })
+    notifySuccess(t('database.tools.importSuccess', { database: props.database }))
+    await load()
+    if (section.value === 'diagram') await loadDiagram()
+  } catch (cause: unknown) { notifyError(messageFor(cause)) }
+  finally { importingDump.value = false; selectedDumpFile.value = undefined }
 }
 async function runMaintenance(action: 'check' | 'analyze' | 'repair') {
   const list = tables.value ?? []
@@ -225,12 +268,14 @@ watch(() => source.connectionId, async (connectionId) => {
       <div class="mt-6 flex min-h-0 flex-1 flex-col gap-6 md:flex-row">
         <nav class="flex shrink-0 gap-1 border-b border-line pb-4 md:w-48 md:flex-col md:border-b-0 md:border-r md:pb-0 md:pr-5">
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'export' ? 'tools-nav-active' : ''" @click="toolsSection = 'export'"><Icon name="lucide:download" class="h-4 w-4" aria-hidden="true" />{{ t('database.tools.exportTitle') }}</button>
+          <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'import' ? 'tools-nav-active' : ''" @click="toolsSection = 'import'"><Icon name="lucide:upload" class="h-4 w-4" aria-hidden="true" />{{ t('database.tools.importTitle') }}</button>
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'migration' ? 'tools-nav-active' : ''" @click="toolsSection = 'migration'"><Icon name="lucide:arrow-right-left" class="h-4 w-4" aria-hidden="true" />{{ t('database.tools.migrationTitle') }}</button>
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'maintenance' ? 'tools-nav-active' : ''" @click="toolsSection = 'maintenance'"><Icon name="lucide:wrench" class="h-4 w-4" aria-hidden="true" />{{ t('database.tools.maintenanceTitle') }}</button>
           <button type="button" class="tools-nav tools-nav-danger flex items-center gap-2" :class="toolsSection === 'danger' ? 'tools-nav-danger-active' : ''" @click="toolsSection = 'danger'"><Icon name="lucide:trash-2" class="h-4 w-4" aria-hidden="true" />{{ t('database.tools.deleteTitle') }}</button>
         </nav>
         <div class="min-w-0 flex-1 pb-8">
-          <section v-if="toolsSection === 'export'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('database.tools.exportTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.exportDescription') }}</p><button type="button" class="mt-5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="exporting" @click="exportSchema">{{ exporting ? t('database.tools.exporting') : t('database.tools.export') }}</button></section>
+          <section v-if="toolsSection === 'export'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('database.tools.exportTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.exportDescription') }}</p><label class="mt-5 flex items-start gap-3 text-sm"><input v-model="exportStructureOnly" class="mt-0.5" type="checkbox" :disabled="exporting"><span><span class="font-medium">{{ t('database.tools.exportStructureOnly') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.exportStructureOnlyDescription') }}</span></span></label><button type="button" class="mt-5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="exporting" @click="exportDatabase">{{ exporting ? t('database.tools.exporting') : t('database.tools.export') }}</button></section>
+          <section v-else-if="toolsSection === 'import'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('database.tools.importTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.importDescription', { database }) }}</p><input ref="dumpInput" class="sr-only" type="file" accept=".sql,application/sql,text/plain" @change="requestDumpImport"><button type="button" class="mt-5 flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="importingDump" @click="dumpInput?.click()"><Icon name="lucide:upload" class="h-4 w-4" aria-hidden="true" />{{ importingDump ? t('database.tools.importing') : t('database.tools.import') }}</button></section>
           <section v-else-if="toolsSection === 'migration'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('database.tools.migrationTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.migrationDescription', { database }) }}</p><div class="mt-6 grid gap-3 md:grid-cols-2"><label class="grid gap-1.5 text-sm font-medium">{{ t('database.tools.sourceConnection') }}<AppSelect v-model="source.connectionId" :options="sourceConnectionOptions" :disabled="migrating" :placeholder="t('database.tools.chooseConnection')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('database.tools.sourceDatabase') }}<AppSelect v-model="source.database" :options="sourceDatabaseOptions" :disabled="migrating || sourceLoading || !source.connectionId" :placeholder="t('database.tools.chooseDatabase')" /></label></div><div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.recreateTarget" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('database.tools.recreateTarget') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.recreateTargetDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('database.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.ignoreDuplicatesDescription') }}</span></span></label></div><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="migrating || sourceLoading || !source.database" @click="requestMigration">{{ migrating ? t('database.tools.migrating') : t('database.tools.migrate') }}</button></section>
           <section v-else-if="toolsSection === 'maintenance'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('database.tools.maintenanceTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.maintenanceDescription') }}</p><div class="mt-5 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('check')">{{ maintenanceRunning === 'check' ? t('database.tools.running') : t('database.tools.check') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('analyze')">{{ maintenanceRunning === 'analyze' ? t('database.tools.running') : t('database.tools.analyze') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('repair')">{{ maintenanceRunning === 'repair' ? t('database.tools.running') : t('database.tools.repair') }}</button></div><div v-if="maintenanceResult?.columns.length" class="scrollbar mt-5 overflow-auto rounded-md border border-line"><table class="min-w-full text-left text-xs"><thead class="bg-canvas text-muted"><tr><th v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2 font-medium">{{ column.name }}</th></tr></thead><tbody><tr v-for="(row, index) in maintenanceResult.rows" :key="index" class="border-t border-line"><td v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2">{{ row[column.name] }}</td></tr></tbody></table></div></section>
           <section v-else class="max-w-xl"><h3 class="text-base font-semibold text-rose-600">{{ t('database.tools.deleteTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.deleteDescription', { database }) }}</p><button type="button" class="mt-5 rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="deletingDatabase" @click="showDeleteConfirmation = true">{{ deletingDatabase ? t('database.tools.deleting') : t('database.tools.delete') }}</button></section>
@@ -238,6 +283,7 @@ watch(() => source.connectionId, async (connectionId) => {
       </div>
     </div>
     <AppConfirmDialog v-model="showRecreateConfirmation" :title="t('database.tools.recreateTargetTitle')" :description="t('database.tools.recreateTargetConfirm', { database })" :confirm-label="t('database.tools.recreateAndMigrate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmRecreateMigration" />
+    <AppConfirmDialog v-model="showImportConfirmation" :title="t('database.tools.importConfirmTitle')" :description="t('database.tools.importConfirm', { database })" :confirm-label="t('database.tools.recreateAndImport')" :cancel-label="t('common.close')" tone="danger" @confirm="importDatabaseDump" />
     <AppConfirmDialog v-model="showDeleteConfirmation" :title="t('database.tools.deleteConfirmTitle')" :description="t('database.tools.deleteConfirm', { database })" :confirm-label="t('database.tools.delete')" :cancel-label="t('common.close')" tone="danger" @confirm="deleteDatabase" />
   </section>
 </template>

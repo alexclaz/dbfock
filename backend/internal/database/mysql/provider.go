@@ -632,6 +632,41 @@ func (p *Provider) Query(ctx context.Context, c models.Connection, statement str
 	return p.run(ctx, c, statement, maxRows, nil)
 }
 
+// RestoreDatabase replaces a database with the contents of a SQL dump. It
+// intentionally opens a server-level connection (without a default schema),
+// because the selected database may be the connection's initial database and
+// is therefore unavailable immediately after DROP DATABASE.
+func (p *Provider) RestoreDatabase(ctx context.Context, c models.Connection, databaseName, script string) (*models.QueryResult, error) {
+	quotedDatabase, err := database.QuoteIdentifier(databaseName)
+	if err != nil {
+		return nil, err
+	}
+	started := time.Now()
+	serverConnection := c
+	serverConnection.InitialDatabase = ""
+	db, err := p.open(serverConnection)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	if _, err = db.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quotedDatabase); err != nil {
+		return nil, err
+	}
+	if _, err = db.ExecContext(ctx, "CREATE DATABASE "+quotedDatabase); err != nil {
+		return nil, err
+	}
+	if _, err = db.ExecContext(ctx, "USE "+quotedDatabase); err != nil {
+		return nil, err
+	}
+	if _, err = db.ExecContext(ctx, script); err != nil {
+		return nil, err
+	}
+	result := newQueryResult()
+	result.ExecutionTimeMs = time.Since(started).Milliseconds()
+	return result, nil
+}
+
 // UpdateRow updates only changed columns. The original result values form the
 // WHERE predicate so a concurrently changed row is never overwritten silently.
 func (p *Provider) UpdateRow(ctx context.Context, c models.Connection, dbName, table string, original, changes map[string]any) (*models.QueryResult, error) {

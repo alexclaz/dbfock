@@ -18,8 +18,6 @@ const showCreateDatabase = ref(false)
 const creatingDatabase = ref(false)
 const selectedDumpDatabases = ref<string[]>([])
 const dumping = ref(false)
-const restoringDump = ref(false)
-const dumpInput = ref<HTMLInputElement>()
 const sections: { id: ConnectionSection; label: string; icon: string }[] = [
   { id: 'databases', label: 'connectionHome.databases', icon: 'lucide:database' },
   { id: 'users', label: 'connectionUsers.title', icon: 'lucide:users-round' },
@@ -60,8 +58,8 @@ async function createDump() {
   if (!selectedDumpDatabases.value.length || dumping.value) return
   dumping.value = true
   try {
-    const script = ['SET FOREIGN_KEY_CHECKS=0']
     for (const database of selectedDumpDatabases.value) {
+      const script = ['SET FOREIGN_KEY_CHECKS=0']
       script.push(`CREATE DATABASE IF NOT EXISTS ${quote(database)}`, `USE ${quote(database)}`)
       const tables = await api<TableInfo[]>(`/connections/${props.connection.id}/databases/${encodeURIComponent(database)}/tables`)
       for (const table of tables) {
@@ -70,12 +68,16 @@ async function createDump() {
         let offset = 0; let hasMore = true
         while (hasMore) { const result = await api<QueryResult>(`/connections/${props.connection.id}/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(table.name)}/data?limit=500&offset=${offset}`); const types = Object.fromEntries(structure.columns.map((column) => [column.name, column.databaseType])); script.push(...tableInsertStatements(database, table.name, result.columns.map((column) => column.name), result.rows.map((row) => result.columns.map((column) => row[column.name])), 80_000, types)); offset += result.rows.length; hasMore = result.hasMore }
       }
+      script.push('SET FOREIGN_KEY_CHECKS=1')
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(new Blob([`${script.join(';\n')};\n`], { type: 'application/sql;charset=utf-8' }))
+      link.download = `dbfock-dump-${database}-${new Date().toISOString().slice(0, 10)}.sql`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
+      link.click()
+      URL.revokeObjectURL(link.href)
     }
-    script.push('SET FOREIGN_KEY_CHECKS=1')
-    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([`${script.join(';\n')};\n`], { type: 'application/sql;charset=utf-8' })); link.download = `dbfock-dump-${new Date().toISOString().slice(0, 10)}.sql`; link.click(); URL.revokeObjectURL(link.href)
+    notifySuccess(t('connectionHome.dumpCreated', { count: selectedDumpDatabases.value.length }))
   } catch (cause: unknown) { notifyError(errorMessage(cause)) } finally { dumping.value = false }
 }
-async function importDump(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file || restoringDump.value) return; restoringDump.value = true; try { await api(`/connections/${props.connection.id}/dump/import`, { method: 'POST', body: { sql: await file.text() } }); notifySuccess(t('connectionHome.dumpImported')); await loadDatabases() } catch (cause: unknown) { notifyError(errorMessage(cause)) } finally { restoringDump.value = false; (event.target as HTMLInputElement).value = '' } }
 
 onMounted(loadDatabases)
 watch(() => props.connection.id, () => { activeSection.value = 'databases'; filter.value = ''; loadDatabases() })
@@ -92,18 +94,12 @@ watch(() => props.connection.status, () => loadDatabases())
             <template v-else>
               <div><h2 class="text-base font-semibold">{{ t('connectionHome.tools') }}</h2><p class="mt-1 text-sm text-muted">{{ t('connectionHome.toolsDescription') }}</p></div>
               <p v-if="connection.status !== 'connected'" class="mt-4 rounded-md border border-line bg-canvas px-3 py-2 text-sm text-muted">{{ t('connectionHome.toolsConnectPrompt') }}</p>
-              <div v-else class="mt-5 grid max-w-2xl gap-4">
+              <div v-else class="mt-5 max-w-2xl">
                 <section class="rounded-lg border border-line bg-panel p-4">
                   <h3 class="text-sm font-semibold">{{ t('connectionHome.dumpTitle') }}</h3>
                   <p class="mt-1 text-sm text-muted">{{ t('connectionHome.dumpDescription') }}</p>
                   <label class="mt-4 grid gap-1.5 text-sm font-medium">{{ t('connectionHome.dumpDatabases') }}<AppMultiSelect v-model="selectedDumpDatabases" :options="(databases || []).map((database) => ({ value: database.name, label: database.name }))" :placeholder="t('connectionHome.dumpDatabasesPlaceholder')" /></label>
                   <button type="button" class="mt-4 flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="dumping || !selectedDumpDatabases.length" @click="createDump"><Icon name="lucide:download" class="h-4 w-4" aria-hidden="true" />{{ dumping ? t('connectionHome.creatingDump') : t('connectionHome.createDump') }}</button>
-                </section>
-                <section class="rounded-lg border border-line bg-panel p-4">
-                  <h3 class="text-sm font-semibold">{{ t('connectionHome.importTitle') }}</h3>
-                  <p class="mt-1 text-sm text-muted">{{ t('connectionHome.importDescription') }}</p>
-                  <input ref="dumpInput" class="sr-only" type="file" accept=".sql,application/sql,text/plain" @change="importDump">
-                  <button type="button" class="mt-4 flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="restoringDump" @click="dumpInput?.click()"><Icon name="lucide:upload" class="h-4 w-4" aria-hidden="true" />{{ restoringDump ? t('connectionHome.importingDump') : t('connectionHome.importDump') }}</button>
                 </section>
               </div>
             </template>

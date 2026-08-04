@@ -41,6 +41,7 @@ type desktopApp struct {
 	server *http.Server
 	repo   *repository.Repository
 	logger *slog.Logger
+	files  *DesktopFiles
 }
 
 func main() {
@@ -59,6 +60,7 @@ func main() {
 		AssetServer: &assetserver.Options{Assets: assets},
 		OnStartup:   app.start,
 		OnShutdown:  app.stop,
+		Bind:        []any{app.files},
 	})
 	if err != nil {
 		slog.Error("desktop stopped", "error", err)
@@ -122,10 +124,12 @@ func newDesktopApp() (*desktopApp, error) {
 		},
 		repo:   repo,
 		logger: logger,
+		files:  &DesktopFiles{},
 	}, nil
 }
 
-func (a *desktopApp) start(_ context.Context) {
+func (a *desktopApp) start(ctx context.Context) {
+	a.files.setContext(ctx)
 	go func() {
 		a.logger.Info("desktop API listening", "address", a.server.Addr)
 		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

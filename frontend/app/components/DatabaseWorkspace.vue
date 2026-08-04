@@ -8,6 +8,7 @@ type DatabaseToolsSection = 'export' | 'import' | 'migration' | 'maintenance' | 
 const props = defineProps<{ connectionId: string; database: string; activeSection?: DatabaseSection }>()
 const emit = defineEmits<{ table: [table: string]; 'update:activeSection': [value: DatabaseSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; databaseDeleted: [connectionId: string, database: string] }>()
 const api = useApi()
+const { saveTextFile } = useFileSave()
 const workspace = useWorkspaceStore()
 const { t } = useI18n()
 const { error: notifyError, success: notifySuccess } = useToast()
@@ -67,11 +68,8 @@ function createTableSQL(ddl: string, table: string) {
   return created
 }
 function downloadDump(contents: string) {
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(new Blob([contents], { type: 'application/sql;charset=utf-8' }))
-  link.download = `dbfock-dump-${props.database}-${new Date().toISOString().slice(0, 10)}.sql`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
-  link.click()
-  URL.revokeObjectURL(link.href)
+  const name = `dbfock-dump-${props.database}-${new Date().toISOString().slice(0, 10)}.sql`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
+  return saveTextFile(name, contents, 'application/sql;charset=utf-8')
 }
 async function exportDatabase() {
   if (exporting.value) return
@@ -97,7 +95,7 @@ async function exportDatabase() {
       }
     }
     script.push('SET FOREIGN_KEY_CHECKS=1')
-    downloadDump(`${script.join(';\n')};\n`)
+    if (!await downloadDump(`${script.join(';\n')};\n`)) return
     notifySuccess(t('database.tools.exportSuccess', { count: structures.length }))
   } catch (cause: unknown) { notifyError(messageFor(cause)) }
   finally { exporting.value = false }

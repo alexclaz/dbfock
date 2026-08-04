@@ -9,6 +9,7 @@ type TableToolsSection = 'import' | 'export' | 'migration' | 'maintenance' | 'da
 const props = defineProps<{ connectionId: string; database: string; table: string; activeSection?: TableSection }>()
 const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-database': [database: string]; 'open-table': [table: string]; databaseDeleted: [connectionId: string, database: string] }>()
 const api = useApi()
+const { saveTextFile } = useFileSave()
 const workspace = useWorkspaceStore()
 const { t } = useI18n()
 const { error: notifyError, success: notifySuccess } = useToast()
@@ -203,12 +204,7 @@ function transferFileName(extension: 'csv' | 'json') {
   return `dbfock-${props.database}-${props.table}-${new Date().toISOString().slice(0, 10)}.${extension}`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
 }
 function downloadTable(contents: string, extension: 'csv' | 'json') {
-  const file = new Blob([contents], { type: extension === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8' })
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(file)
-  link.download = transferFileName(extension)
-  link.click()
-  URL.revokeObjectURL(link.href)
+  return saveTextFile(transferFileName(extension), contents, extension === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8')
 }
 async function exportTable(format: 'csv' | 'json') {
   if (transferring.value) return
@@ -229,7 +225,7 @@ async function exportTable(format: 'csv' | 'json') {
       if (rows.length >= 50_000 && hasMore) throw new Error(t('table.exportLimit'))
     }
     const exported: QueryResult = { columns, rows, rowCount: rows.length, executionTimeMs: 0, affectedRows: 0, hasMore: false, transactionPending: false, pendingStatements: 0 }
-    downloadTable(format === 'csv' ? queryResultAsCSV(exported) : queryResultAsJSON(exported), format)
+    if (!await downloadTable(format === 'csv' ? queryResultAsCSV(exported) : queryResultAsJSON(exported), format)) return
     notifySuccess(t('table.exported', { count: rows.length }))
   } catch (cause: any) { notifyError(cause.message) }
   finally { transferring.value = false }

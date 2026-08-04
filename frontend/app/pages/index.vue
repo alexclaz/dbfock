@@ -47,7 +47,7 @@ const committing = ref(false)
 const queryPageSize = 200
 const resultTabs = reactive<Record<string, ResultTab[]>>({})
 const activeResultTabIds = reactive<Record<string, string | undefined>>({})
-const pagedQueries = reactive<Record<string, { connectionId: string; sql: string; requestId: string } | undefined>>({})
+const pagedQueries = reactive<Record<string, { connectionId: string; sql: string; requestId: string; database?: string } | undefined>>({})
 const smartResultTabs = reactive<SmartResultTab[]>([])
 const activeSmartResultTabIds = reactive<Record<string, string | undefined>>({})
 const recentlyClosedTabs = ref<WorkspaceTab[]>([])
@@ -290,7 +290,10 @@ async function createDatabase(rawName: string) {
   finally { creatingDatabase.value = false }
 }
 function databaseDeleted(connectionId: string, database: string) {
-  workspace.closeTabs(new Set(workspace.tabs.filter((tab) => tab.connectionId === connectionId && tab.database === database).map((tab) => tab.id)))
+  // An SQL tab only points at the deleted database as its default schema. Drop
+  // that choice instead of closing the editor and its query with it.
+  for (const tab of workspace.tabs) if (tab.type === 'sql' && tab.connectionId === connectionId && tab.database === database) tab.database = undefined
+  workspace.closeTabs(new Set(workspace.tabs.filter((tab) => tab.type !== 'sql' && tab.connectionId === connectionId && tab.database === database).map((tab) => tab.id)))
   void databaseTree.value?.refreshConnection(connectionId)
 }
 function openStats(connection: Connection) {
@@ -370,14 +373,15 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
   delete pagedQueries[resultTab.id]
   try {
     const pageable = /^\s*select\b/i.test(sql)
-    const result = await api<QueryResult>(`/connections/${connectionId}/query`, { method: 'POST', signal: controller.signal, body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId } : { sql, requestId } })
+    const database = tab.type === 'sql' ? tab.database : undefined
+    const result = await api<QueryResult>(`/connections/${connectionId}/query`, { method: 'POST', signal: controller.signal, body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId, database } : { sql, requestId, database } })
     if (!isCurrentQuery(resultTab.id, generation, requestId)) return
     resultTab.result = pageable ? pageResult(result) : result
     const resultForSources = resultTab.result
-    const sources = await editableSources(sql, connection, resultForSources)
+    const sources = await editableSources(sql, connection, resultForSources, database)
     if (!isCurrentQuery(resultTab.id, generation, requestId) || resultTab.result !== resultForSources) return
     resultTab.sources = sources
-    if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId }
+    if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId, database }
     updateTransactionStatus(connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
   } catch (error: any) {
@@ -466,7 +470,7 @@ async function loadMoreSmartRows() {
   smartQueryError.value = ''
   try {
     const offset = current.rows.length
-    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true } }))
+    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true, database: page.database } }))
     if (resultTab.result !== current || pagedQueries[resultTab.id] !== page) return
     resultTab.result = { ...current, rows: [...current.rows, ...result.rows], rowCount: current.rows.length + result.rows.length, hasMore: result.hasMore }
   } catch (error: any) { smartQueryError.value = error.message }
@@ -512,12 +516,12 @@ function pageResult(result: QueryResult): QueryResult {
   const rows = result.rows.slice(0, queryPageSize)
   return { ...result, rows, rowCount: rows.length, hasMore }
 }
-async function editableSources(sql: string, connection: Connection, result: QueryResult): Promise<EditableResultSource[]> {
+async function editableSources(sql: string, connection: Connection, result: QueryResult, defaultDatabase?: string): Promise<EditableResultSource[]> {
   if (!/^\s*select\b/i.test(sql) || /\b(union|intersect|except)\b/i.test(sql)) return []
   const references = [...sql.matchAll(/\b(?:from|join)\s+((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*))?)/gi)]
     .map((match) => match[1]?.split('.').map((part) => part.trim().replace(/^`|`$/g, '')))
     .filter((parts): parts is string[] => Boolean(parts?.length))
-    .map((parts) => ({ database: parts.length === 2 ? parts[0] : connection.initialDatabase, table: parts.length === 2 ? parts[1] : parts[0] }))
+    .map((parts) => ({ database: parts.length === 2 ? parts[0] : (defaultDatabase || connection.initialDatabase), table: parts.length === 2 ? parts[1] : parts[0] }))
     .filter((source): source is { database: string; table: string } => Boolean(source.database && source.table))
   const uniqueReferences = [...new Map(references.map((source) => [`${source.database}.${source.table}`, source])).values()]
   if (!uniqueReferences.length) return []
@@ -583,7 +587,7 @@ async function loadMoreRows() {
   queryError.value = ''
   try {
     const offset = current.rows.length
-    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true } }))
+    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true, database: page.database } }))
     if (resultTab.result !== current || pagedQueries[resultTab.id] !== page) return
     resultTab.result = { ...current, rows: [...current.rows, ...result.rows], rowCount: current.rows.length + result.rows.length, hasMore: result.hasMore }
   } catch (error: any) { queryError.value = error.message }
@@ -638,7 +642,13 @@ function updateExecutionConnection(connectionId?: string) {
   if (!connectionId || !tab) return
   tab.connectionId = connectionId
   tab.executionConnectionId = connectionId
+  // The chosen default schema belongs to the previous server and may not exist here.
+  if (tab.type === 'sql') tab.database = undefined
   workspace.activeConnectionId = connectionId
+}
+function updateDefaultDatabase(database?: string) {
+  const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId)
+  if (tab?.type === 'sql') tab.database = database
 }
 function selectTab(id: string) {
   const tab = workspace.tabs.find((item) => item.id === id)
@@ -788,7 +798,7 @@ watch(() => workspace.activeConnectionId, () => {
           <ConnectionHomeWorkspace v-else-if="activeTab.type === 'connection-home' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`connection-home:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" @edit="editing = $event; showConnection = true" @new-query="openSQLForConnection($event.id)" @stats="openStats" @database="openDatabase" />
           <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`stats:${activeTab.id}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
           <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" @update:section="updateSettingsSection" />
-          <SqlWorkspace v-else ref="sqlWorkspace" :key="activeTab.id" :tab="activeTab" :connections="workspace.connections" :query-connection="queryConnection" :query-connection-id="queryConnectionId" :show-a-i-agent="showAIAgent" :ai-configured="aiConfigured" :editor-height="editorHeight" :editor-width="editorWidth" :running="running" :loading-more-rows="loadingMoreRows" :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :result-summary="activeResultSummary" @update-sql="updateSQL" @update-execution-connection="updateExecutionConnection" @viewport="updateSQLViewport(activeTab.id, $event.top, $event.left)" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @new-query="newSQL" @save-query="saveQuery" @ai-status="updateAIStatus" @hide-a-i-agent="hideAIAgent" @show-a-i-agent="showHiddenAIAgent" @update-editor-height="editorHeight = $event" @update-editor-width="editorWidth = $event" @select-result-tab="activeResultTabIds[activeTab.id] = $event" @close-result-tab="closeResultTab(activeTab.id, $event)" @create-result-tab="createResultTab(activeTab.id)" @copy-result="copyActiveResult" @save-result="saveActiveResultEdits" @load-more="loadMoreRows" />
+          <SqlWorkspace v-else ref="sqlWorkspace" :key="activeTab.id" :tab="activeTab" :connections="workspace.connections" :query-connection="queryConnection" :query-connection-id="queryConnectionId" :show-a-i-agent="showAIAgent" :ai-configured="aiConfigured" :editor-height="editorHeight" :editor-width="editorWidth" :running="running" :loading-more-rows="loadingMoreRows" :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :result-summary="activeResultSummary" @update-sql="updateSQL" @update-execution-connection="updateExecutionConnection" @update-default-database="updateDefaultDatabase" @viewport="updateSQLViewport(activeTab.id, $event.top, $event.left)" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @new-query="newSQL" @save-query="saveQuery" @ai-status="updateAIStatus" @hide-a-i-agent="hideAIAgent" @show-a-i-agent="showHiddenAIAgent" @update-editor-height="editorHeight = $event" @update-editor-width="editorWidth = $event" @select-result-tab="activeResultTabIds[activeTab.id] = $event" @close-result-tab="closeResultTab(activeTab.id, $event)" @create-result-tab="createResultTab(activeTab.id)" @copy-result="copyActiveResult" @save-result="saveActiveResultEdits" @load-more="loadMoreRows" />
         </KeepAlive>
       </div>
     </section>

@@ -29,6 +29,7 @@ const githubUrl = 'https://github.com/alexclaz/dbfock'
 const props = defineProps<{ section?: SettingsSection }>()
 const emit = defineEmits<{ 'ai-configured': []; 'update:section': [section: SettingsSection] }>()
 const api = useApi()
+const { saveTextFile } = useFileSave()
 const workspace = useWorkspaceStore()
 const { locale, setLocale, t, locales } = useI18n()
 const { error: notifyError, success: notifySuccess } = useToast()
@@ -210,12 +211,8 @@ async function exportConnections() {
   connectionTransferError.value = ''; connectionTransferSuccess.value = ''
   try {
     const exported = await api<ConnectionExport>('/connections/export')
-    const file = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(file)
-    link.download = `dbfock-connections-${new Date().toISOString().slice(0, 10)}.json`
-    link.click()
-    URL.revokeObjectURL(link.href)
+    const name = `dbfock-connections-${new Date().toISOString().slice(0, 10)}.json`
+    if (!await saveTextFile(name, JSON.stringify(exported, null, 2), 'application/json')) return
     connectionTransferSuccess.value = t('connections.exported', { count: exported.connections.length })
   } catch (cause: any) { connectionTransferError.value = cause.message || t('connections.transferError') }
 }

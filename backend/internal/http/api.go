@@ -524,6 +524,10 @@ type queryRequest struct {
 	RequestID   string `json:"requestId"`
 	HistorySQL  string `json:"historySql"`
 	SkipHistory bool   `json:"skipHistory"`
+	// Database overrides the connection's initial schema for this statement, so
+	// unqualified table names (including joins and subqueries) resolve against
+	// the database selected in the editor.
+	Database string `json:"database"`
 }
 type dumpImportRequest struct {
 	SQL string `json:"sql"`
@@ -610,6 +614,13 @@ func (a *API) query(w http.ResponseWriter, r *http.Request) {
 	if err := a.requireConnected(c.ID); err != nil {
 		fail(w, err)
 		return
+	}
+	if db := strings.TrimSpace(req.Database); db != "" {
+		if err := database.ValidateIdentifier(db); err != nil {
+			fail(w, err)
+			return
+		}
+		c.InitialDatabase = db
 	}
 	p, err := a.providers.Get(c.Driver)
 	if err != nil {

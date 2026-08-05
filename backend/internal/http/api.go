@@ -108,6 +108,8 @@ func (a *API) Router() http.Handler {
 				r.Get("/databases/{database}/tables/{table}/structure", a.structure)
 				r.Get("/databases/{database}/tables/{table}/data", a.tableData)
 				r.Post("/query", a.query)
+				r.Get("/databases/{database}/dump", a.exportDatabaseDump)
+				r.Post("/databases/{database}/recreate", a.recreateDatabase)
 				r.Post("/databases/{database}/dump/import", a.importDatabaseDump)
 				r.Post("/dump/import", a.importDump)
 				r.Post("/rows/update", a.updateRow)
@@ -528,6 +530,11 @@ type queryRequest struct {
 	// unqualified table names (including joins and subqueries) resolve against
 	// the database selected in the editor.
 	Database string `json:"database"`
+	// DisableForeignKeyChecks suspends foreign key validation while the
+	// statement runs, the way a dump does. Bulk loads cannot honour every
+	// constraint as they go, because a child row is often written before its
+	// parent table has been filled.
+	DisableForeignKeyChecks bool `json:"disableForeignKeyChecks"`
 }
 type dumpImportRequest struct {
 	SQL string `json:"sql"`
@@ -651,15 +658,23 @@ func (a *API) query(w http.ResponseWriter, r *http.Request) {
 		fail(w, fmt.Errorf("use the transaction controls to commit or rollback production changes"))
 		return
 	}
+	// The setting is session scoped and the driver sends both statements over a
+	// single connection, so prefixing is what keeps the switch and the payload
+	// together. Each request otherwise gets a fresh pool, where a separate
+	// "SET" request would have no effect on this statement.
+	statement := req.SQL
+	if req.DisableForeignKeyChecks {
+		statement = "SET FOREIGN_KEY_CHECKS=0;\n" + statement
+	}
 	var result *models.QueryResult
 	if transactional, ok := p.(database.TransactionalProvider); ok && c.Environment == "production" && (isDataMutation(operation) || transactional.TransactionStatus(c).Pending) {
 		if transactional.TransactionStatus(c).Pending && !isDataMutation(operation) && !isReadOnly(operation) {
 			fail(w, fmt.Errorf("commit or rollback pending production changes before running %s", operation))
 			return
 		}
-		result, err = transactional.QueryInTransaction(ctx, c, req.SQL, a.config.MaxQueryRows, isDataMutation(operation))
+		result, err = transactional.QueryInTransaction(ctx, c, statement, a.config.MaxQueryRows, isDataMutation(operation))
 	} else {
-		result, err = p.Query(ctx, c, req.SQL, a.config.MaxQueryRows)
+		result, err = p.Query(ctx, c, statement, a.config.MaxQueryRows)
 	}
 	h := models.QueryHistory{ConnectionID: c.ID, SQL: historySQL, Type: operation, Status: "success"}
 	if result != nil {
@@ -715,6 +730,96 @@ func (a *API) importDump(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Import SQL dump", Type: "IMPORT", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs, AffectedRows: result.AffectedRows})
+	respond(w, http.StatusOK, result)
+}
+
+// exportDatabaseDump streams the dump instead of buffering it, so the response
+// starts before the whole database has been read. A failure after the first
+// bytes cannot change the status code, so the dump ends with a marker the
+// client checks to reject a truncated file.
+func (a *API) exportDatabaseDump(w http.ResponseWriter, r *http.Request) {
+	databaseName := chi.URLParam(r, "database")
+	if err := database.ValidateIdentifier(databaseName); err != nil {
+		fail(w, err)
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err = a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	p, err := a.providers.Get(c.Driver)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	dumper, ok := p.(database.DatabaseDumper)
+	if !ok {
+		fail(w, fmt.Errorf("database dumps are not supported by %s", c.Driver))
+		return
+	}
+	structureOnly := r.URL.Query().Get("structureOnly") == "true"
+
+	// A dump reads every row, so the per-statement timeout does not apply. The
+	// request context still ends it when the client goes away.
+	started := time.Now()
+	w.Header().Set("Content-Type", "application/sql; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	err = dumper.DumpDatabase(r.Context(), c, databaseName, structureOnly, w)
+	h := models.QueryHistory{ConnectionID: c.ID, SQL: "Dump database " + databaseName, Type: "EXPORT", Status: "success", ExecutionTimeMs: time.Since(started).Milliseconds()}
+	if err != nil {
+		h.Status = "error"
+		h.ErrorMessage = err.Error()
+		_ = a.repo.AddHistory(context.Background(), h)
+		a.log.Error("could not dump database", "database", databaseName, "error", err)
+		_, _ = fmt.Fprintf(w, "\n-- dump failed: %s\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		return
+	}
+	_ = a.repo.AddHistory(context.Background(), h)
+}
+func (a *API) recreateDatabase(w http.ResponseWriter, r *http.Request) {
+	databaseName := chi.URLParam(r, "database")
+	if err := database.ValidateIdentifier(databaseName); err != nil {
+		fail(w, err)
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err = a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	p, err := a.providers.Get(c.Driver)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	recreator, ok := p.(database.DatabaseRecreator)
+	if !ok {
+		fail(w, fmt.Errorf("recreating databases is not supported by %s", c.Driver))
+		return
+	}
+	a.rollbackPendingTransaction(r.Context(), c.ID)
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	result, err := recreator.RecreateDatabase(ctx, c, databaseName)
+	h := models.QueryHistory{ConnectionID: c.ID, SQL: "Recreate database " + databaseName, Type: "DROP", Status: "success"}
+	if err != nil {
+		h.Status = "error"
+		h.ErrorMessage = err.Error()
+		_ = a.repo.AddHistory(context.Background(), h)
+		fail(w, err)
+		return
+	}
+	h.ExecutionTimeMs = result.ExecutionTimeMs
+	_ = a.repo.AddHistory(context.Background(), h)
 	respond(w, http.StatusOK, result)
 }
 func (a *API) importDatabaseDump(w http.ResponseWriter, r *http.Request) {

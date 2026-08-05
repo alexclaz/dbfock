@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -660,6 +661,47 @@ func (p *Provider) RestoreDatabase(ctx context.Context, c models.Connection, dat
 		return nil, err
 	}
 	if _, err = db.ExecContext(ctx, script); err != nil {
+		return nil, err
+	}
+	result := newQueryResult()
+	result.ExecutionTimeMs = time.Since(started).Milliseconds()
+	return result, nil
+}
+
+// RecreateDatabase drops a database and creates it again empty, preserving its
+// character set and collation. Like RestoreDatabase it uses a server-level
+// connection, because the target may be the connection's initial schema.
+func (p *Provider) RecreateDatabase(ctx context.Context, c models.Connection, databaseName string) (*models.QueryResult, error) {
+	quotedDatabase, err := database.QuoteIdentifier(databaseName)
+	if err != nil {
+		return nil, err
+	}
+	started := time.Now()
+	serverConnection := c
+	serverConnection.InitialDatabase = ""
+	db, err := p.open(serverConnection)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	var charset, collation sql.NullString
+	row := db.QueryRowContext(ctx, "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", databaseName)
+	if err = row.Scan(&charset, &collation); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	if _, err = db.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quotedDatabase); err != nil {
+		return nil, err
+	}
+	create := "CREATE DATABASE " + quotedDatabase
+	if database.ValidateIdentifier(charset.String) == nil {
+		create += " CHARACTER SET " + charset.String
+	}
+	if database.ValidateIdentifier(collation.String) == nil {
+		create += " COLLATE " + collation.String
+	}
+	if _, err = db.ExecContext(ctx, create); err != nil {
 		return nil, err
 	}
 	result := newQueryResult()

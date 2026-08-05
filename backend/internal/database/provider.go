@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"io"
 	"regexp"
 
 	"github.com/dbfock/database-manager/backend/internal/models"
@@ -64,6 +65,20 @@ type UserManager interface {
 // never need to issue a destructive drop as a separate connection request.
 type DatabaseDumpRestorer interface {
 	RestoreDatabase(context.Context, models.Connection, string, string) (*models.QueryResult, error)
+}
+
+// DatabaseDumper writes a SQL dump of one database. It streams, so a dump is a
+// single request whose memory cost does not grow with the data volume.
+type DatabaseDumper interface {
+	DumpDatabase(ctx context.Context, c models.Connection, databaseName string, structureOnly bool, w io.Writer) error
+}
+
+// DatabaseRecreator drops a database and creates it empty again, keeping its
+// character set and collation. Dropping the whole schema is the only way to
+// clear tables that reference each other, because individual drops fail on the
+// foreign keys pointing at them.
+type DatabaseRecreator interface {
+	RecreateDatabase(context.Context, models.Connection, string) (*models.QueryResult, error)
 }
 
 type Registry struct{ providers map[string]Provider }

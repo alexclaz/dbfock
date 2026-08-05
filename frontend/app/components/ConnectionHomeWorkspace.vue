@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import type { Connection, DatabaseInfo, QueryResult, TableInfo, TableStructure } from '~/types/database'
-import { tableInsertStatements } from '~/utils/tableTransfer'
+import type { Connection, DatabaseInfo } from '~/types/database'
 
 type ConnectionSection = 'databases' | 'users' | 'tools'
 const props = defineProps<{ connection: Connection }>()
 const emit = defineEmits<{ edit: [connection: Connection]; newQuery: [connection: Connection]; stats: [connection: Connection]; database: [connection: Connection, database: string] }>()
 const api = useApi()
 const { saveTextFile } = useFileSave()
+const { fetchDump, dumpFileName } = useDatabaseDump()
 const { t } = useI18n()
 const { error: notifyError, success: notifySuccess } = useToast()
 const activeSection = ref<ConnectionSection>('databases')
@@ -60,18 +60,8 @@ async function createDump() {
   dumping.value = true
   try {
     for (const database of selectedDumpDatabases.value) {
-      const script = ['SET FOREIGN_KEY_CHECKS=0']
-      script.push(`CREATE DATABASE IF NOT EXISTS ${quote(database)}`, `USE ${quote(database)}`)
-      const tables = await api<TableInfo[]>(`/connections/${props.connection.id}/databases/${encodeURIComponent(database)}/tables`)
-      for (const table of tables) {
-        const structure = await api<TableStructure>(`/connections/${props.connection.id}/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(table.name)}/structure`)
-        script.push(structure.ddl.replace(/;?$/, ''))
-        let offset = 0; let hasMore = true
-        while (hasMore) { const result = await api<QueryResult>(`/connections/${props.connection.id}/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(table.name)}/data?limit=500&offset=${offset}`); const types = Object.fromEntries(structure.columns.map((column) => [column.name, column.databaseType])); script.push(...tableInsertStatements(database, table.name, result.columns.map((column) => column.name), result.rows.map((row) => result.columns.map((column) => row[column.name])), 80_000, types)); offset += result.rows.length; hasMore = result.hasMore }
-      }
-      script.push('SET FOREIGN_KEY_CHECKS=1')
-      const name = `dbfock-dump-${database}-${new Date().toISOString().slice(0, 10)}.sql`.replaceAll(/[^a-zA-Z0-9._-]/g, '-')
-      if (!await saveTextFile(name, `${script.join(';\n')};\n`, 'application/sql;charset=utf-8')) return
+      const script = await fetchDump(props.connection.id, database)
+      if (!await saveTextFile(dumpFileName(database), script, 'application/sql;charset=utf-8')) return
     }
     notifySuccess(t('connectionHome.dumpCreated', { count: selectedDumpDatabases.value.length }))
   } catch (cause: unknown) { notifyError(errorMessage(cause)) } finally { dumping.value = false }

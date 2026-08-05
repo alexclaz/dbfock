@@ -778,7 +778,7 @@ func updateRowStatement(dbName, table string, original, changes map[string]any) 
 			return "", nil, quoteErr
 		}
 		set = append(set, quoted+"=?")
-		args = append(args, changes[column])
+		args = append(args, normalizeTemporalValue(changes[column]))
 	}
 	for _, column := range originalColumns {
 		quoted, quoteErr := database.QuoteIdentifier(column)
@@ -786,10 +786,29 @@ func updateRowStatement(dbName, table string, original, changes map[string]any) 
 			return "", nil, quoteErr
 		}
 		where = append(where, quoted+" <=> ?")
-		args = append(args, original[column])
+		args = append(args, normalizeTemporalValue(original[column]))
 	}
 	return "UPDATE " + qdb + "." + qt + " SET " + strings.Join(set, ", ") + " WHERE " + strings.Join(where, " AND ") + " LIMIT 1", args, nil
 }
+
+// normalizeTemporalValue converts the RFC 3339 strings the API emits for
+// DATE/DATETIME/TIMESTAMP columns back into MySQL's literal format. Sending
+// "2026-08-04T23:14:46Z" straight back raises error 1292 under strict mode,
+// even when the column only appears in the WHERE predicate. The wall clock is
+// preserved so the value still matches what was read from the row.
+func normalizeTemporalValue(value any) any {
+	text, ok := value.(string)
+	if !ok || !rfc3339Pattern.MatchString(text) {
+		return value
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return value
+	}
+	return parsed.Format("2006-01-02 15:04:05.999999999")
+}
+
+var rfc3339Pattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$`)
 
 func sortedKeys(values map[string]any) []string {
 	keys := make([]string, 0, len(values))

@@ -21,6 +21,7 @@ type Config struct {
 	MaxOpenConnections   int
 	MaxConcurrentQueries int
 	MaxRequestBodyBytes  int64
+	MaxUploadBodyBytes   int64
 }
 
 func Load() (Config, error) {
@@ -40,6 +41,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	maxUploadMB, err := integer("MAX_UPLOAD_MEGABYTES", 64)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Env: value("APP_ENV", "development"), Host: value("APP_HOST", ""), Port: value("APP_PORT", "18080"),
 		DatabasePath:        value("APP_DATABASE_PATH", "./data/app.db"),
@@ -48,6 +53,7 @@ func Load() (Config, error) {
 		DefaultQueryTimeout: time.Duration(timeout) * time.Second, MaxQueryRows: maxRows,
 		MaxOpenConnections: maxOpen, MaxConcurrentQueries: maxConcurrent,
 		MaxRequestBodyBytes: 1 << 20,
+		MaxUploadBodyBytes:  int64(maxUploadMB) << 20,
 	}, nil
 }
 

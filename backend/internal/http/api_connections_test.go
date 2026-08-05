@@ -12,7 +12,7 @@ import (
 )
 
 func TestGetAppVersion(t *testing.T) {
-	api := &API{config: config.Config{AppVersion: "0.5.7"}}
+	api := &API{config: config.Config{AppVersion: "0.5.8"}}
 	recorder := httptest.NewRecorder()
 	api.getAppVersion(recorder, httptest.NewRequest("GET", "/api/app/version", nil))
 
@@ -25,8 +25,8 @@ func TestGetAppVersion(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Version != "0.5.7" {
-		t.Fatalf("version = %q, want 0.5.7", response.Version)
+	if response.Version != "0.5.8" {
+		t.Fatalf("version = %q, want 0.5.8", response.Version)
 	}
 }
 

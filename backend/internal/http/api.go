@@ -2294,6 +2294,10 @@ func fail(w http.ResponseWriter, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		status = http.StatusNotFound
 	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		status = http.StatusRequestEntityTooLarge
+	}
 	respond(w, status, map[string]any{"error": map[string]string{"message": err.Error()}})
 }
 func (a *API) requestLogger(next http.Handler) http.Handler {

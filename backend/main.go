@@ -113,12 +113,12 @@ func newDesktopApp() (*desktopApp, error) {
 	providers.Register("mysql", mysqlprovider.New(cfg.MaxOpenConnections))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	api := httpapi.New(cfg, connections.New(repo, cipher, providers), providers, repo, ai.New(repo, cipher), backup.New(repo, cipher), logger)
-	handler := middleware.RateLimit(120, time.Minute)(middleware.CORS(cfg.CORSAllowedOrigins)(api.Router()))
+	handler := middleware.BodyLimit(cfg.MaxRequestBodyBytes, cfg.MaxUploadBodyBytes, "/dump/import")(middleware.RateLimit(120, time.Minute)(middleware.CORS(cfg.CORSAllowedOrigins)(api.Router())))
 
 	return &desktopApp{
 		server: &http.Server{
 			Addr:              net.JoinHostPort(cfg.Host, cfg.Port),
-			Handler:           http.MaxBytesHandler(handler, cfg.MaxRequestBodyBytes),
+			Handler:           handler,
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		},

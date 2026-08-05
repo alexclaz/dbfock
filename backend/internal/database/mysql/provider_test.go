@@ -68,6 +68,32 @@ func TestUpdateRowStatementUsesParametersAndNullSafeOriginalValues(t *testing.T)
 	}
 }
 
+func TestUpdateRowStatementNormalizesRFC3339Values(t *testing.T) {
+	original := map[string]any{"id": 1, "criado_em": "2026-08-04T23:14:46Z", "expira_em": "2026-08-05T02:44:46.5Z", "cancelado_em": nil, "moeda": "BRL"}
+	_, args, err := updateRowStatement("geral", "creditos_recargas", original, map[string]any{"pago_em": "2026-08-05T10:00:00Z"})
+	if err != nil {
+		t.Fatalf("updateRowStatement() error = %v", err)
+	}
+	// args: [pago_em] + WHERE columns sorted: cancelado_em, criado_em, expira_em, id, moeda
+	want := []any{"2026-08-05 10:00:00", nil, "2026-08-04 23:14:46", "2026-08-05 02:44:46.5", 1, "BRL"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %#v, want %#v", i, args[i], want[i])
+		}
+	}
+}
+
+func TestNormalizeTemporalValueLeavesNonTimestampsAlone(t *testing.T) {
+	for _, value := range []any{"BRL", "2026-08-04", nil, 45, "not a date at all"} {
+		if got := normalizeTemporalValue(value); got != value {
+			t.Fatalf("normalizeTemporalValue(%#v) = %#v, want unchanged", value, got)
+		}
+	}
+}
+
 func TestLimitSelectRows(t *testing.T) {
 	got := limitSelectRows(" SELECT id FROM users; ", 200)
 	want := "SELECT * FROM (SELECT id FROM users) AS `dbfock_result` LIMIT 201"

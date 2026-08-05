@@ -47,8 +47,8 @@ func main() {
 	providers.Register("mysql", mysqlprovider.New(cfg.MaxOpenConnections))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	api := httpapi.New(cfg, connections.New(repo, cipher, providers), providers, repo, ai.New(repo, cipher), backup.New(repo, cipher), logger)
-	handler := middleware.RateLimit(120, time.Minute)(middleware.CORS(cfg.CORSAllowedOrigins)(api.Router()))
-	server := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: http.MaxBytesHandler(handler, cfg.MaxRequestBodyBytes), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	handler := middleware.BodyLimit(cfg.MaxRequestBodyBytes, cfg.MaxUploadBodyBytes, "/dump/import")(middleware.RateLimit(120, time.Minute)(middleware.CORS(cfg.CORSAllowedOrigins)(api.Router())))
+	server := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		logger.Info("API listening", "port", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

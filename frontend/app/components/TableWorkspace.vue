@@ -329,7 +329,7 @@ watch(error, (message) => { if (message) { notifyError(message); error.value = '
             <button type="button" class="rounded px-2.5 py-1" :class="dataView === 'json' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="dataView === 'json'" @click="dataView = 'json'">JSON</button>
             <button type="button" class="rounded px-2.5 py-1" :class="dataView === 'csv' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="dataView === 'csv'" @click="dataView = 'csv'">CSV</button>
           </div>
-          <template v-if="dataEditing"><button type="button" class="rounded-md bg-accent px-2.5 py-1 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50" :disabled="!dataGrid?.canSave" @click="dataGrid?.save()">{{ t('grid.save') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink" @click="dataGrid?.cancel()">{{ t('grid.cancel') }}</button></template>
+          <template v-if="dataEditing && dataGrid?.canSave"><button type="button" class="rounded-md bg-accent px-2.5 py-1 font-medium text-white" @click="dataGrid?.save()">{{ t('grid.save') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink" @click="dataGrid?.cancel()">{{ t('grid.cancel') }}</button></template>
         </div>
       </div>
       <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="result" :loading="loading" :view="dataView" :editing="dataEditing" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>

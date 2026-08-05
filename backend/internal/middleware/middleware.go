@@ -2,9 +2,31 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
+
+// BodyLimit caps request bodies at defaultBytes, except for paths ending in one
+// of uploadPaths, which are capped at uploadBytes. Handlers may narrow their own
+// limit further with http.MaxBytesReader, but never widen it past this one.
+func BodyLimit(defaultBytes, uploadBytes int64, uploadPaths ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limit := defaultBytes
+			for _, p := range uploadPaths {
+				if strings.HasSuffix(r.URL.Path, p) {
+					limit = uploadBytes
+					break
+				}
+			}
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, limit)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 func CORS(origins []string) func(http.Handler) http.Handler {
 	allowed := map[string]bool{}

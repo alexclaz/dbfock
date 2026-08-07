@@ -119,6 +119,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const smartQueries = ref<SmartQuery[]>([])
   const queryTabHistory = ref<QueryTabHistory[]>([])
   const queryTabSequence = ref(0)
+  // Bumped whenever a tab's content must be rebuilt from scratch (reopened or
+  // opened again while already open). Keys derived from it remount the cached
+  // workspace component instead of restoring stale data from <KeepAlive>.
+  const tabEpochs = ref<Record<string, number>>({})
   const activeConnection = computed(() => connections.value.find((item) => item.id === activeConnectionId.value))
   const api = useApi()
   const storageKey = 'dbfock.workspace-tabs'
@@ -230,6 +234,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       await api(`/connections/${id}/connect`, { method: 'POST' })
     } finally { await refreshConnections() }
   }
+  function tabEpoch(id: string) { return tabEpochs.value[id] ?? 0 }
+  function refreshTabContent(id: string) { tabEpochs.value[id] = tabEpoch(id) + 1 }
   function openTab(tab: WorkspaceTab) {
     const existing = tabs.value.find((item) => item.id === tab.id)
     if (!existing) tabs.value.push(tab)
@@ -251,6 +257,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function closeTabs(ids: Set<string>) {
     const closableIds = new Set(ids)
     if (!closableIds.size) return
+
+    // Closing discards the tab's content: reopening it must fetch fresh data.
+    for (const id of closableIds) refreshTabContent(id)
 
     const activeIndex = tabs.value.findIndex((tab) => tab.id === activeTabId.value)
     const activeWasClosed = closableIds.has(activeTabId.value)
@@ -328,5 +337,5 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await api(`/smart-queries/${encodeURIComponent(id)}`, { method: 'DELETE' })
     smartQueries.value = smartQueries.value.filter((query) => query.id !== id)
   }
-  return { connections, activeConnectionId, activeConnection, tabs, activeTabId, savedQueries, smartQueries, queryTabHistory, queryTabSequence, refreshConnections, reloadWorkspaceQueries, syncWorkspaceQueries, connectConnection, disconnectConnection, revalidateConnection, openTab, closeTabs, closeTab, closeTabsToRight, closeOtherTabs, moveTab, nextQueryTabNumber, archiveQueryTabs, removeQueryTabHistory, saveQuery, removeSavedQuery, addSmartQuery, updateSmartQuery, removeSmartQuery, restoreWorkspace }
+  return { connections, activeConnectionId, activeConnection, tabs, activeTabId, tabEpoch, refreshTabContent, savedQueries, smartQueries, queryTabHistory, queryTabSequence, refreshConnections, reloadWorkspaceQueries, syncWorkspaceQueries, connectConnection, disconnectConnection, revalidateConnection, openTab, closeTabs, closeTab, closeTabsToRight, closeOtherTabs, moveTab, nextQueryTabNumber, archiveQueryTabs, removeQueryTabHistory, saveQuery, removeSavedQuery, addSmartQuery, updateSmartQuery, removeSmartQuery, restoreWorkspace }
 })

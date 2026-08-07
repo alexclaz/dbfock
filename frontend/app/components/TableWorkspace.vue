@@ -26,6 +26,10 @@ const error = ref('')
 const dataEditing = ref(false)
 const dataView = ref<'table' | 'json' | 'csv'>('table')
 const dataCopied = ref(false)
+const nameCopied = ref(false)
+const showDataSearch = ref(false)
+const dataSearch = ref('')
+const dataSearchInput = ref<HTMLInputElement>()
 const dataGrid = ref<{ save: () => boolean; cancel: () => void; canSave: boolean }>()
 const ddlCopied = ref(false)
 const ddlEl = ref<HTMLElement>()
@@ -49,7 +53,42 @@ const showDeleteDatabaseConfirmation = ref(false)
 const deletingDatabase = ref(false)
 const toolsSection = ref<TableToolsSection>('import')
 
+// Double-clicking a cell opens the editor, so `dataEditing` alone does not mean
+// there is anything to lose. Only pending changes may block reloading the grid.
+const dataDirty = computed(() => dataEditing.value && Boolean(dataGrid.value?.canSave))
+
+// Filtering renumbers rows, so inline editing cannot map an edited row back to
+// its original while a search is narrowing the grid.
+const dataSearchActive = computed(() => showDataSearch.value && dataSearch.value.trim().length > 0)
+const displayedResult = computed(() => {
+  const current = result.value
+  if (!current || !dataSearchActive.value) return current
+  const needle = dataSearch.value.trim().toLowerCase()
+  const rows = current.rows.filter((row) => current.columns.some((column) => {
+    const value = row[column.name]
+    return (value === null ? 'null' : String(value)).toLowerCase().includes(needle)
+  }))
+  return { ...current, rows, rowCount: rows.length, hasMore: false }
+})
+
+async function openDataSearch() {
+  showDataSearch.value = true
+  await nextTick()
+  dataSearchInput.value?.focus()
+  dataSearchInput.value?.select()
+}
+function closeDataSearch() {
+  showDataSearch.value = false
+  dataSearch.value = ''
+}
+function handleDataSearchShortcut(event: KeyboardEvent) {
+  if (section.value !== 'data' || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f') return
+  event.preventDefault()
+  void openDataSearch()
+}
+
 async function loadData() {
+  if (dataEditing.value && !dataDirty.value) dataEditing.value = false
   loading.value = true
   error.value = ''
   try {
@@ -63,7 +102,7 @@ async function loadData() {
 async function previousPage() { if (page.value === 0 || loading.value) return; page.value--; await loadData() }
 async function nextPage() { if (!result.value?.hasMore || loading.value) return; page.value++; await loadData() }
 async function toggleSort(column: string) {
-  if (loading.value || dataEditing.value) return
+  if (loading.value || dataDirty.value) return
   if (sortColumn.value !== column) { sortColumn.value = column; sortDirection.value = 'asc' }
   else if (sortDirection.value === 'asc') { sortDirection.value = 'desc' }
   else { sortColumn.value = undefined; sortDirection.value = 'asc' }
@@ -103,9 +142,15 @@ const references = computed(() => structure.value?.references ?? [])
 const triggers = computed(() => structure.value?.triggers ?? [])
 const indexes = computed(() => structure.value?.indexes ?? [])
 async function copyData() {
-  if (!result.value || !navigator.clipboard) return
-  const contents = dataView.value === 'json' ? queryResultAsJSON(result.value) : dataView.value === 'csv' ? queryResultAsCSV(result.value) : queryResultAsTSV(result.value)
+  const current = displayedResult.value
+  if (!current || !navigator.clipboard) return
+  const contents = dataView.value === 'json' ? queryResultAsJSON(current) : dataView.value === 'csv' ? queryResultAsCSV(current) : queryResultAsTSV(current)
   try { await navigator.clipboard.writeText(contents); dataCopied.value = true; window.setTimeout(() => dataCopied.value = false, 1500) }
+  catch { /* Clipboard access can be denied by the browser. */ }
+}
+async function copyTableName() {
+  if (!navigator.clipboard) return
+  try { await navigator.clipboard.writeText(`${props.database}.${props.table}`); nameCopied.value = true; window.setTimeout(() => nameCopied.value = false, 1500) }
   catch { /* Clipboard access can be denied by the browser. */ }
 }
 async function copyDDL() {
@@ -304,12 +349,20 @@ watch(() => source.database, async (database) => {
 })
 watch(() => [props.connectionId, props.database, props.table], loadData, { immediate: true })
 watch(error, (message) => { if (message) { notifyError(message); error.value = '' } })
+// Pending edits cannot survive a narrowed grid, so drop them when filtering starts.
+watch(dataSearchActive, (active) => { if (active && dataEditing.value) dataGrid.value?.cancel() })
+watch(section, (next) => { if (next !== 'data') closeDataSearch() })
+
+// Tabs stay mounted inside <KeepAlive>, so only the visible workspace listens.
+onActivated(() => window.addEventListener('keydown', handleDataSearchShortcut, true))
+onDeactivated(() => window.removeEventListener('keydown', handleDataSearchShortcut, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShortcut, true))
 </script>
 
 <template>
   <section class="flex h-full min-h-0 flex-col">
     <header class="space-y-3 border-b border-line px-5 py-4 lg:px-7">
-      <div class="flex items-center gap-2"><Icon name="lucide:table-2" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold"><button type="button" class="text-sm font-normal text-muted hover:text-accent hover:underline focus-ring" :aria-label="database" @click="emit('open-database', database)">{{ database }}.</button>{{ table }}</h1></div>
+      <div class="group flex items-center gap-2"><Icon name="lucide:table-2" class="h-5 w-5 text-muted" aria-hidden="true" /><h1 class="text-xl font-semibold"><button type="button" class="text-sm font-normal text-muted hover:text-accent hover:underline focus-ring" :aria-label="database" @click="emit('open-database', database)">{{ database }}.</button>{{ table }}</h1><button type="button" class="grid rounded p-1 text-muted opacity-0 transition hover:bg-canvas hover:text-ink focus-visible:opacity-100 group-hover:opacity-100" :title="nameCopied ? t('grid.copied') : t('table.copyName')" :aria-label="nameCopied ? t('grid.copied') : t('table.copyName')" @click="copyTableName"><Icon :name="nameCopied ? 'lucide:check' : 'lucide:copy'" class="h-4 w-4" aria-hidden="true" /></button></div>
       <div class="scrollbar max-w-full overflow-x-auto"><div class="flex w-max rounded-md border border-line p-0.5 text-xs">
         <button class="rounded px-2.5 py-1" :class="section === 'data' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('data')">{{ t('table.data') }}</button><button class="rounded px-2.5 py-1" :class="section === 'structure' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('structure')">{{ t('table.structure') }}</button><button class="rounded px-2.5 py-1" :class="section === 'constraints' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('constraints')">{{ t('table.constraints') }}</button><button class="rounded px-2.5 py-1" :class="section === 'foreignKeys' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('foreignKeys')">{{ t('table.foreignKeys') }}</button><button class="rounded px-2.5 py-1" :class="section === 'references' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('references')">{{ t('table.references') }}</button><button class="rounded px-2.5 py-1" :class="section === 'triggers' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('triggers')">{{ t('table.triggers') }}</button><button class="rounded px-2.5 py-1" :class="section === 'indexes' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('indexes')">{{ t('table.indexes') }}</button><button class="rounded px-2.5 py-1" :class="section === 'ddl' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('ddl')">DDL</button><button class="rounded px-2.5 py-1" :class="section === 'tools' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('tools')">{{ t('table.tools.title') }}</button><button class="rounded px-2.5 py-1" :class="section === 'diagram' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('diagram')">{{ t('table.diagram') }}</button>
       </div>
@@ -319,10 +372,11 @@ watch(error, (message) => { if (message) { notifyError(message); error.value = '
       <div class="flex items-center justify-between gap-3 border-b border-line px-4 py-2 text-xs text-muted">
         <span>{{ t('query.rows', { count: result?.rowCount || 0 }) }}{{ result?.hasMore ? '+' : '' }}</span>
         <div class="flex flex-wrap items-center justify-end gap-2">
-          <AppSelect v-model="pageSize" :disabled="loading || dataEditing" class="w-24" :options="[{ value: 50, label: '50' }, { value: 100, label: '100' }, { value: 250, label: '250' }]" @change="page = 0; loadData()" />
-          <button :disabled="page === 0 || loading || dataEditing" @click="previousPage">{{ t('table.previous') }}</button>
-          <button :disabled="!result?.hasMore || loading || dataEditing" @click="nextPage">{{ t('table.next') }}</button>
-          <button class="grid rounded p-1 hover:bg-canvas disabled:opacity-60" :aria-label="t('stats.refresh')" :disabled="loading || dataEditing" @click="loadData"><Icon name="lucide:refresh-cw" class="h-4 w-4" aria-hidden="true" /></button>
+          <AppSelect v-model="pageSize" :disabled="loading || dataDirty" class="w-24" :options="[{ value: 50, label: '50' }, { value: 100, label: '100' }, { value: 250, label: '250' }]" @change="page = 0; loadData()" />
+          <button :disabled="page === 0 || loading || dataDirty" @click="previousPage">{{ t('table.previous') }}</button>
+          <button :disabled="!result?.hasMore || loading || dataDirty" @click="nextPage">{{ t('table.next') }}</button>
+          <button type="button" class="grid rounded p-1 hover:bg-canvas" :class="showDataSearch ? 'bg-canvas text-ink' : ''" :title="t('table.search')" :aria-label="t('table.search')" :aria-pressed="showDataSearch" @click="showDataSearch ? closeDataSearch() : openDataSearch()"><Icon name="lucide:search" class="h-4 w-4" aria-hidden="true" /></button>
+          <button class="grid rounded p-1 hover:bg-canvas disabled:opacity-60" :aria-label="t('stats.refresh')" :disabled="loading || dataDirty" @click="loadData"><Icon name="lucide:refresh-cw" class="h-4 w-4" aria-hidden="true" /></button>
           <button type="button" class="grid rounded p-1 hover:bg-canvas disabled:opacity-60" :title="dataCopied ? t('grid.copied') : t('grid.copy')" :aria-label="dataCopied ? t('grid.copied') : t('grid.copy')" :disabled="!result" @click="copyData"><Icon :name="dataCopied ? 'lucide:check' : 'lucide:copy'" class="h-4 w-4" aria-hidden="true" /></button>
           <div class="flex rounded-md border border-line p-0.5">
             <button type="button" class="rounded px-2.5 py-1" :class="dataView === 'table' ? 'bg-canvas text-ink' : 'text-muted'" :aria-pressed="dataView === 'table'" @click="dataView = 'table'">{{ t('grid.table') }}</button>
@@ -332,7 +386,13 @@ watch(error, (message) => { if (message) { notifyError(message); error.value = '
           <template v-if="dataEditing && dataGrid?.canSave"><button type="button" class="rounded-md bg-accent px-2.5 py-1 font-medium text-white" @click="dataGrid?.save()">{{ t('grid.save') }}</button><button type="button" class="rounded-md border border-line px-2.5 py-1 text-ink" @click="dataGrid?.cancel()">{{ t('grid.cancel') }}</button></template>
         </div>
       </div>
-      <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="result" :loading="loading" :view="dataView" :editing="dataEditing" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
+      <div v-if="showDataSearch" class="flex items-center gap-2 border-b border-line px-4 py-2 text-xs">
+        <Icon name="lucide:search" class="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
+        <input ref="dataSearchInput" v-model="dataSearch" type="search" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('table.searchPlaceholder')" :aria-label="t('table.search')" @keydown.esc.prevent="closeDataSearch">
+        <span v-if="dataSearchActive" class="shrink-0 text-muted">{{ displayedResult?.rows.length ? t('table.searchMatches', { count: displayedResult.rows.length, total: result?.rows.length || 0 }) : t('table.searchNoMatches') }}</span>
+        <button type="button" class="grid shrink-0 rounded p-1 text-muted hover:bg-canvas hover:text-ink" :title="t('table.searchClose')" :aria-label="t('table.searchClose')" @click="closeDataSearch"><Icon name="lucide:x" class="h-4 w-4" aria-hidden="true" /></button>
+      </div>
+      <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="displayedResult" :editable="!dataSearchActive" :loading="loading" :view="dataView" :editing="dataEditing" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
     </template>
     <div v-else-if="section === 'structure'" class="scrollbar overflow-auto p-4"><table class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.column') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.nullable') }}</th><th class="border-b border-line p-2">{{ t('table.key') }}</th><th class="border-b border-line p-2">{{ t('table.default') }}</th></tr></thead><tbody><tr v-for="column in structure?.columns" :key="column.name"><td class="border-b border-line p-2 font-medium">{{ column.name }}</td><td class="border-b border-line p-2 text-muted">{{ column.columnType }}</td><td class="border-b border-line p-2">{{ column.nullable ? t('table.yes') : t('table.no') }}</td><td class="border-b border-line p-2">{{ column.key || '—' }}</td><td class="border-b border-line p-2">{{ column.default || '—' }}</td></tr></tbody></table></div>
     <div v-else-if="section === 'constraints'" class="scrollbar overflow-auto p-4"><table v-if="constraints.length" class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.name') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.columns') }}</th></tr></thead><tbody><tr v-for="constraint in constraints" :key="constraint.name"><td class="border-b border-line p-2 font-medium">{{ constraint.name }}</td><td class="border-b border-line p-2">{{ constraint.type }}</td><td class="border-b border-line p-2 text-muted">{{ constraint.columns?.join(', ') || '—' }}</td></tr></tbody></table><p v-else class="text-sm text-muted">{{ t('table.empty') }}</p></div>

@@ -625,9 +625,19 @@ func (p *Provider) GetTableData(ctx context.Context, c models.Connection, dbName
 		}
 		order = " ORDER BY " + qs + " " + d
 	}
-	// Fetch one extra row so run can tell the client whether another page exists,
-	// while still returning at most limit rows to the caller.
-	return p.run(ctx, c, "SELECT * FROM "+qdb+"."+qt+order+" LIMIT ? OFFSET ?", limit, []any{limit + 1, offset})
+	// Fetch one extra row to tell the client whether another page exists. run
+	// treats the explicit LIMIT as the caller's own cap and leaves the result
+	// untouched, so this page is trimmed here.
+	result, err := p.run(ctx, c, "SELECT * FROM "+qdb+"."+qt+order+" LIMIT ? OFFSET ?", limit, []any{limit + 1, offset})
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Rows) > limit {
+		result.Rows = result.Rows[:limit]
+		result.HasMore = true
+	}
+	result.RowCount = len(result.Rows)
+	return result, nil
 }
 func (p *Provider) Query(ctx context.Context, c models.Connection, statement string, maxRows int) (*models.QueryResult, error) {
 	return p.run(ctx, c, statement, maxRows, nil)

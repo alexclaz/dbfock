@@ -2,8 +2,10 @@
 import type { QueryColumn, QueryResult } from '~/types/database'
 import { queryResultAsCSV, queryResultAsJSON } from '~/utils/queryResult'
 
-const props = withDefaults(defineProps<{ result?: QueryResult; loading?: boolean; loadingMore?: boolean; view?: 'table' | 'json' | 'csv'; editing?: boolean; editable?: boolean; editableColumns?: string[]; jsonEditable?: boolean; sortable?: boolean; sortColumn?: string; sortDirection?: 'asc' | 'desc' }>(), { view: 'table', editing: false, editable: true, jsonEditable: true, sortable: false })
-const emit = defineEmits<{ loadMore: []; save: [result: QueryResult]; cancel: []; startEdit: []; sort: [column: string, direction: 'asc' | 'desc'] }>()
+const props = withDefaults(defineProps<{ result?: QueryResult; loading?: boolean; loadingMore?: boolean; view?: 'table' | 'json' | 'csv'; editing?: boolean; editable?: boolean; editableColumns?: string[]; jsonEditable?: boolean; sortable?: boolean; sortColumn?: string; sortDirection?: 'asc' | 'desc'; rowActions?: boolean }>(), { view: 'table', editing: false, editable: true, jsonEditable: true, sortable: false, rowActions: false })
+type GridRowMutations = { insertedRows: { row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: Record<string, unknown>[] }
+
+const emit = defineEmits<{ loadMore: []; save: [result: QueryResult, mutations: GridRowMutations]; cancel: []; startEdit: []; sort: [column: string, direction: 'asc' | 'desc'] }>()
 const { t } = useI18n()
 const columns = computed(() => props.result?.columns ?? [])
 const draft = ref<QueryResult>()
@@ -15,6 +17,10 @@ const columnWidths = reactive<Record<string, number>>({})
 const inputRefs = new Map<string, HTMLInputElement>()
 const copiedColumn = ref<string>()
 const sortMenuColumn = ref<string>()
+const insertedRows = ref<{ row: Record<string, unknown>; useDefaults: boolean }[]>([])
+const deletedRows = ref<Record<string, unknown>[]>([])
+const draftOrigins = ref<(Record<string, unknown> | undefined)[]>([])
+const contextMenu = ref<{ x: number; y: number; row: number }>()
 
 const displayResult = computed(() => props.editing ? draft.value ?? props.result : props.result)
 const rows = computed(() => displayResult.value?.rows ?? [])
@@ -44,8 +50,12 @@ function selectSort(column: string, direction: 'asc' | 'desc') { emit('sort', co
 watch(() => props.editing, (editing) => {
   activeCell.value = undefined
   jsonError.value = ''
-  if (!editing) { draft.value = undefined; return }
+  contextMenu.value = undefined
+  if (!editing) { draft.value = undefined; insertedRows.value = []; deletedRows.value = []; draftOrigins.value = []; return }
   draft.value = cloneResult(props.result)
+  insertedRows.value = []
+  deletedRows.value = []
+  draftOrigins.value = props.result?.rows.map((row) => row) ?? []
   jsonDraft.value = queryResultAsJSON(draft.value)
 }, { immediate: true })
 watch(() => props.result, (result) => { if (!props.editing) draft.value = cloneResult(result) })
@@ -136,10 +146,46 @@ function updateJSON(value: string) {
 }
 function save() {
   if (!draft.value || !canSave.value) return false
-  emit('save', cloneResult(draft.value)!)
+  emit('save', cloneResult(draft.value)!, { insertedRows: insertedRows.value.map(({ row, useDefaults }) => ({ row: { ...row }, useDefaults })), deletedRows: deletedRows.value.map((row) => ({ ...row })) })
   return true
 }
 function cancel() { emit('cancel') }
+async function addRow(values: Record<string, unknown> = {}, useDefaults = true) {
+  if (!props.editable || props.view !== 'table') return
+  if (!props.editing) emit('startEdit')
+  await nextTick()
+  if (!draft.value) return
+  const row = Object.fromEntries(columns.value.map((column) => [column.name, values[column.name] ?? null]))
+  draft.value.rows.push(row)
+  draft.value.rowCount = draft.value.rows.length
+  draftOrigins.value.push(undefined)
+  insertedRows.value.push({ row, useDefaults })
+}
+async function duplicateRow(rowIndex: number) {
+  const source = rows.value[rowIndex]
+  if (!source) return
+  await addRow(source, false)
+}
+async function deleteRow(rowIndex: number) {
+  if (!props.editable || props.view !== 'table') return
+  if (!props.editing) emit('startEdit')
+  await nextTick()
+  const row = draft.value?.rows[rowIndex]
+  if (!row || !draft.value) return
+  const origin = draftOrigins.value[rowIndex]
+  const inserted = insertedRows.value.findIndex((entry) => entry.row === row)
+  if (origin) deletedRows.value.push(origin)
+  else if (inserted >= 0) insertedRows.value.splice(inserted, 1)
+  draft.value.rows.splice(rowIndex, 1)
+  draft.value.rowCount = draft.value.rows.length
+  draftOrigins.value.splice(rowIndex, 1)
+  activeCell.value = undefined
+}
+function openRowMenu(event: MouseEvent, row: number) {
+  if (!props.rowActions) return
+  event.preventDefault()
+  contextMenu.value = { x: event.clientX, y: event.clientY, row }
+}
 function resizeColumn(event: PointerEvent, column: QueryColumn) {
   event.preventDefault()
   event.stopPropagation()
@@ -159,20 +205,21 @@ function resizeColumn(event: PointerEvent, column: QueryColumn) {
   window.addEventListener('pointerup', stop)
 }
 
-defineExpose({ save, cancel, canSave })
+defineExpose({ save, cancel, canSave, addRow })
 </script>
 
 <template>
-  <div class="scrollbar h-full overflow-auto" @scroll="loadMore" @click="sortMenuColumn = undefined">
+  <div class="scrollbar h-full overflow-auto" @scroll="loadMore" @click="sortMenuColumn = undefined; contextMenu = undefined">
     <div v-if="loading" class="p-5 text-sm text-muted">{{ t('grid.loading') }}</div>
     <div v-else-if="!result" class="grid h-full place-items-center p-8 text-center text-sm text-muted">{{ t('grid.empty') }}</div>
     <table v-else-if="view === 'table'" class="table-fixed border-collapse text-left text-xs">
       <colgroup><col class="w-10"><col v-for="column in columns" :key="column.name" :style="{ width: `${columnWidth(column)}px` }"></colgroup>
       <thead class="sticky top-0 bg-panel text-[11px] text-muted"><tr><th class="w-10 border-b border-r border-line px-2 py-1 font-medium">#</th><th v-for="column in columns" :key="column.name" class="relative border-b border-r border-line px-2 py-1 font-medium" :style="{ width: `${columnWidth(column)}px`, maxWidth: `${columnWidth(column)}px` }"><div class="flex items-center gap-0.5"><span class="min-w-0 flex-1 truncate">{{ column.name }}</span><button type="button" class="grid h-4 w-4 shrink-0 place-items-center rounded hover:bg-canvas hover:text-ink" :title="copiedColumn === column.name ? t('grid.copied') : t('grid.copyColumn')" :aria-label="copiedColumn === column.name ? t('grid.copied') : t('grid.copyColumn')" @click="copyColumnName(column.name)"><Icon :name="copiedColumn === column.name ? 'lucide:check' : 'lucide:copy'" class="h-3 w-3" aria-hidden="true" /></button><button v-if="canSort" type="button" class="grid h-4 w-4 shrink-0 place-items-center rounded hover:bg-canvas hover:text-ink" :class="sortColumn === column.name ? 'text-accent' : ''" :title="t('grid.sortColumn')" :aria-label="t('grid.sortColumn')" :aria-expanded="sortMenuColumn === column.name" @click.stop="toggleSortMenu(column.name)"><Icon :name="sortColumn === column.name ? (sortDirection === 'desc' ? 'lucide:arrow-down' : 'lucide:arrow-up') : 'lucide:arrow-up-down'" class="h-3 w-3" aria-hidden="true" /></button></div><small class="block truncate text-[10px] leading-3 font-normal opacity-70">{{ column.databaseType }}</small><div v-if="sortMenuColumn === column.name" class="absolute right-1 top-full z-20 mt-1 w-28 rounded-md border border-line bg-panel p-0.5 shadow-lg" @click.stop><button type="button" class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left hover:bg-canvas hover:text-ink" :class="sortColumn === column.name && sortDirection === 'asc' ? 'bg-canvas text-accent' : ''" @click="selectSort(column.name, 'asc')"><Icon name="lucide:arrow-up" class="h-3 w-3" aria-hidden="true" />{{ t('grid.sortAscending') }}</button><button type="button" class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left hover:bg-canvas hover:text-ink" :class="sortColumn === column.name && sortDirection === 'desc' ? 'bg-canvas text-accent' : ''" @click="selectSort(column.name, 'desc')"><Icon name="lucide:arrow-down" class="h-3 w-3" aria-hidden="true" />{{ t('grid.sortDescending') }}</button></div><span class="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize select-none hover:bg-accent/70 active:bg-accent" :title="t('grid.resizeColumn')" @pointerdown="resizeColumn($event, column)" /></th></tr></thead>
-      <tbody class="select-text"><tr v-for="(row,index) in rows" :key="index" class="odd:bg-panel/60 hover:bg-accent/10"><td class="border-b border-r border-line px-2 py-1 text-[11px] text-muted">{{ index + 1 }}</td><td v-for="column in columns" :key="column.name" class="overflow-hidden border-b border-r border-line px-2 py-1 leading-4" :class="row[column.name] === null ? 'italic text-muted' : ''" :style="{ width: `${columnWidth(column)}px`, maxWidth: `${columnWidth(column)}px` }" :title="display(row[column.name])" @dblclick="editCell(index, column.name)"><input v-if="editing && activeCell?.row === index && activeCell.column === column.name" :ref="(element) => { if (element) inputRefs.set(cellKey(index, column.name), element as HTMLInputElement) }" class="-my-0.5 w-full rounded border border-accent bg-canvas px-1 py-0.5 text-xs text-ink outline-none" :value="inputValue(row[column.name])" @input="updateCell(index, column.name, ($event.target as HTMLInputElement).value)" @blur="finishCell" @keydown.enter.prevent="finishCell" @keydown.esc.prevent="resetCell"><span v-else class="block truncate">{{ display(row[column.name]) }}</span></td></tr><tr v-if="loadingMore"><td :colspan="columns.length + 1" class="p-3 text-center text-xs text-muted">{{ t('grid.loading') }}</td></tr><tr v-if="!rows.length"><td :colspan="columns.length + 1" class="p-8 text-center text-muted">{{ t('grid.noRows') }}</td></tr></tbody>
+      <tbody class="select-text"><tr v-for="(row,index) in rows" :key="index" class="odd:bg-panel/60 hover:bg-accent/10" @contextmenu="openRowMenu($event, index)"><td class="border-b border-r border-line px-2 py-1 text-[11px] text-muted">{{ index + 1 }}</td><td v-for="column in columns" :key="column.name" class="overflow-hidden border-b border-r border-line px-2 py-1 leading-4" :class="row[column.name] === null ? 'italic text-muted' : ''" :style="{ width: `${columnWidth(column)}px`, maxWidth: `${columnWidth(column)}px` }" :title="display(row[column.name])" @dblclick="editCell(index, column.name)"><input v-if="editing && activeCell?.row === index && activeCell.column === column.name" :ref="(element) => { if (element) inputRefs.set(cellKey(index, column.name), element as HTMLInputElement) }" class="-my-0.5 w-full rounded border border-accent bg-canvas px-1 py-0.5 text-xs text-ink outline-none" :value="inputValue(row[column.name])" @input="updateCell(index, column.name, ($event.target as HTMLInputElement).value)" @blur="finishCell" @keydown.enter.prevent="finishCell" @keydown.esc.prevent="resetCell"><span v-else class="block truncate">{{ display(row[column.name]) }}</span></td></tr><tr v-if="loadingMore"><td :colspan="columns.length + 1" class="p-3 text-center text-xs text-muted">{{ t('grid.loading') }}</td></tr><tr v-if="!rows.length"><td :colspan="columns.length + 1" class="p-8 text-center text-muted">{{ t('grid.noRows') }}</td></tr></tbody>
     </table>
     <div v-else-if="editing && view === 'json'" class="min-h-full bg-canvas p-2"><textarea ref="jsonEditor" class="min-h-[18rem] w-full resize-y rounded-md border border-line bg-panel p-2 font-mono text-xs leading-4 text-ink outline-none focus:border-accent" spellcheck="false" :value="jsonDraft" @input="updateJSON(($event.target as HTMLTextAreaElement).value)" /><p v-if="jsonError" class="mt-2 text-xs text-rose-500">{{ t('grid.invalidJson') }}: {{ jsonError }}</p></div>
     <div v-else-if="view === 'json'" class="min-h-full bg-canvas" @dblclick="editJSON"><pre class="min-h-full cursor-text whitespace-pre-wrap break-words p-2 font-mono text-xs leading-4 text-ink" v-html="highlightedJSON" /></div>
     <pre v-else class="min-h-full whitespace-pre-wrap break-words bg-canvas p-2 font-mono text-xs leading-4 text-ink" v-html="highlightedCSV" />
+    <Teleport to="body"><div v-if="contextMenu" class="fixed z-50 w-36 rounded-md border border-line bg-panel p-1 text-xs text-ink shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop><button type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-canvas" @click="duplicateRow(contextMenu!.row); contextMenu = undefined"><Icon name="lucide:copy-plus" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.duplicateRow') }}</button><button type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-rose-500 hover:bg-rose-500/10" @click="deleteRow(contextMenu!.row); contextMenu = undefined"><Icon name="lucide:trash-2" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.deleteRow') }}</button></div></Teleport>
   </div>
 </template>

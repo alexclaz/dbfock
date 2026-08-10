@@ -734,6 +734,44 @@ func (p *Provider) UpdateRowInTransaction(ctx context.Context, c models.Connecti
 	if err != nil {
 		return nil, err
 	}
+	return p.runMutationInTransaction(ctx, c, statement, args)
+}
+
+// InsertRow adds one row using only the supplied columns. An empty value map
+// intentionally uses MySQL defaults for every column.
+func (p *Provider) InsertRow(ctx context.Context, c models.Connection, dbName, table string, values map[string]any) (*models.QueryResult, error) {
+	statement, args, err := insertRowStatement(dbName, table, values)
+	if err != nil {
+		return nil, err
+	}
+	return p.run(ctx, c, statement, 0, args)
+}
+
+func (p *Provider) InsertRowInTransaction(ctx context.Context, c models.Connection, dbName, table string, values map[string]any) (*models.QueryResult, error) {
+	statement, args, err := insertRowStatement(dbName, table, values)
+	if err != nil {
+		return nil, err
+	}
+	return p.runMutationInTransaction(ctx, c, statement, args)
+}
+
+func (p *Provider) DeleteRow(ctx context.Context, c models.Connection, dbName, table string, original map[string]any) (*models.QueryResult, error) {
+	statement, args, err := deleteRowStatement(dbName, table, original)
+	if err != nil {
+		return nil, err
+	}
+	return p.run(ctx, c, statement, 0, args)
+}
+
+func (p *Provider) DeleteRowInTransaction(ctx context.Context, c models.Connection, dbName, table string, original map[string]any) (*models.QueryResult, error) {
+	statement, args, err := deleteRowStatement(dbName, table, original)
+	if err != nil {
+		return nil, err
+	}
+	return p.runMutationInTransaction(ctx, c, statement, args)
+}
+
+func (p *Provider) runMutationInTransaction(ctx context.Context, c models.Connection, statement string, args []any) (*models.QueryResult, error) {
 	p.transactionMu.Lock()
 	session := p.transactions[c.ID]
 	if session == nil {
@@ -799,6 +837,58 @@ func updateRowStatement(dbName, table string, original, changes map[string]any) 
 		args = append(args, normalizeTemporalValue(original[column]))
 	}
 	return "UPDATE " + qdb + "." + qt + " SET " + strings.Join(set, ", ") + " WHERE " + strings.Join(where, " AND ") + " LIMIT 1", args, nil
+}
+
+func insertRowStatement(dbName, table string, values map[string]any) (string, []any, error) {
+	qdb, err := database.QuoteIdentifier(dbName)
+	if err != nil {
+		return "", nil, err
+	}
+	qt, err := database.QuoteIdentifier(table)
+	if err != nil {
+		return "", nil, err
+	}
+	columns := sortedKeys(values)
+	if len(columns) == 0 {
+		return "INSERT INTO " + qdb + "." + qt + " () VALUES ()", nil, nil
+	}
+	quoted := make([]string, 0, len(columns))
+	args := make([]any, 0, len(columns))
+	for _, column := range columns {
+		name, quoteErr := database.QuoteIdentifier(column)
+		if quoteErr != nil {
+			return "", nil, quoteErr
+		}
+		quoted = append(quoted, name)
+		args = append(args, normalizeTemporalValue(values[column]))
+	}
+	return "INSERT INTO " + qdb + "." + qt + " (" + strings.Join(quoted, ", ") + ") VALUES (" + strings.TrimRight(strings.Repeat("?, ", len(columns)), ", ") + ")", args, nil
+}
+
+func deleteRowStatement(dbName, table string, original map[string]any) (string, []any, error) {
+	if len(original) == 0 {
+		return "", nil, fmt.Errorf("original row is required")
+	}
+	qdb, err := database.QuoteIdentifier(dbName)
+	if err != nil {
+		return "", nil, err
+	}
+	qt, err := database.QuoteIdentifier(table)
+	if err != nil {
+		return "", nil, err
+	}
+	columns := sortedKeys(original)
+	where := make([]string, 0, len(columns))
+	args := make([]any, 0, len(columns))
+	for _, column := range columns {
+		name, quoteErr := database.QuoteIdentifier(column)
+		if quoteErr != nil {
+			return "", nil, quoteErr
+		}
+		where = append(where, name+" <=> ?")
+		args = append(args, normalizeTemporalValue(original[column]))
+	}
+	return "DELETE FROM " + qdb + "." + qt + " WHERE " + strings.Join(where, " AND ") + " LIMIT 1", args, nil
 }
 
 // normalizeTemporalValue converts the RFC 3339 strings the API emits for

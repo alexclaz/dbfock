@@ -51,6 +51,15 @@ type RowUpdater interface {
 	UpdateRowInTransaction(context.Context, models.Connection, string, string, map[string]any, map[string]any) (*models.QueryResult, error)
 }
 
+// RowModifier is implemented by drivers that can insert and delete result-grid
+// rows with parameterized statements.
+type RowModifier interface {
+	InsertRow(context.Context, models.Connection, string, string, map[string]any) (*models.QueryResult, error)
+	InsertRowInTransaction(context.Context, models.Connection, string, string, map[string]any) (*models.QueryResult, error)
+	DeleteRow(context.Context, models.Connection, string, string, map[string]any) (*models.QueryResult, error)
+	DeleteRowInTransaction(context.Context, models.Connection, string, string, map[string]any) (*models.QueryResult, error)
+}
+
 // UserManager is implemented by providers that support native database-account
 // management. It is deliberately optional because not every driver exposes it.
 type UserManager interface {

@@ -4,6 +4,7 @@ import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits
 import { quoteIdentifier } from '~/utils/tableTransfer'
 
 type EditableResultSource = { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }
+type ResultRowMutations = { insertedRows: { row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: Record<string, unknown>[] }
 
 type ResultTab = {
   id: string
@@ -466,9 +467,9 @@ async function copySmartResult(id: string) {
   const tab = smartResultTabs.find((item) => item.id === id)
   if (tab) await copyResult(tab)
 }
-async function saveSmartResultEdits(id: string, edited: QueryResult) {
+async function saveSmartResultEdits(id: string, edited: QueryResult, mutations?: ResultRowMutations) {
   const tab = smartResultTabs.find((item) => item.id === id)
-  if (tab) await saveResultEdits(tab, edited)
+  if (tab) await saveResultEdits(tab, edited, mutations)
 }
 async function loadMoreSmartRows() {
   const id = activeSmartResultTabId.value
@@ -558,21 +559,35 @@ async function editableSources(sql: string, connection: Connection, result: Quer
     return []
   }
 }
-async function saveResultEdits(resultTab: ResultTab, edited: QueryResult) {
+function samePrimaryKey(left: Record<string, unknown>, right: Record<string, unknown>, primaryKey: string[]) { return primaryKey.every((column) => Object.is(left[column], right[column])) }
+function insertValues(row: Record<string, unknown>, source: EditableResultSource, useDefaults: boolean) {
+  return Object.fromEntries(source.columns.filter((column) => (!source.primaryKey.includes(column) || useDefaults) && (!useDefaults || (row[column] !== null && row[column] !== undefined))).map((column) => [column, row[column]]))
+}
+async function saveResultEdits(resultTab: ResultTab, edited: QueryResult, mutations: ResultRowMutations = { insertedRows: [], deletedRows: [] }) {
   const sources = resultTab.sources
   if (!resultTab.result || !sources?.length) { notifyError(t('grid.inlineEditUnsupported')); return }
   const originalResult = resultTab.result
   try {
     let transaction: QueryResult | undefined
+    const originalRows = originalResult.rows.filter((row) => !mutations.deletedRows.some((deleted) => samePrimaryKey(row, deleted, sources[0]!.primaryKey)))
+    const editedRows = edited.rows.slice(0, Math.max(0, edited.rows.length - mutations.insertedRows.length))
+    const originalForUpdates = { ...originalResult, rows: originalRows, rowCount: originalRows.length }
+    const editedForUpdates = { ...edited, rows: editedRows, rowCount: editedRows.length }
     for (const source of sources) {
-      const updates = queryResultEdits(originalResult, edited, { editableColumns: source.columns, keyColumns: source.primaryKey })
+      const updates = queryResultEdits(originalForUpdates, editedForUpdates, { editableColumns: source.columns, keyColumns: source.primaryKey })
       for (const update of updates) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/update`, { method: 'POST', body: { database: source.database, table: source.table, ...update } })
+    }
+    if (sources.length === 1) {
+      const source = sources[0]!
+      for (const inserted of mutations.insertedRows) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/insert`, { method: 'POST', body: { database: source.database, table: source.table, values: insertValues(inserted.row, source, inserted.useDefaults) } })
+      for (const deleted of mutations.deletedRows) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/delete`, { method: 'POST', body: { database: source.database, table: source.table, original: Object.fromEntries(source.primaryKey.map((column) => [column, deleted[column]])) } })
     }
     if (resultTab.result === originalResult) {
       resultTab.result = edited
       resultTab.editing = false
     }
     if (transaction) updateTransactionStatus(sources[0]!.connectionId, transaction.transactionPending, transaction.pendingStatements)
+    if ((mutations.insertedRows.length || mutations.deletedRows.length) && resultTab.result === edited) await refreshPagedResult(resultTab)
     await loadHistory()
   } catch (error: any) { notifyError(error.message) }
 }
@@ -589,9 +604,9 @@ async function copyActiveResult(id: string) {
   const resultTab = activeResultTabs.value.find((tab) => tab.id === id)
   if (resultTab) await copyResult(resultTab)
 }
-async function saveActiveResultEdits(id: string, edited: QueryResult) {
+async function saveActiveResultEdits(id: string, edited: QueryResult, mutations?: ResultRowMutations) {
   const resultTab = activeResultTabs.value.find((tab) => tab.id === id)
-  if (resultTab) await saveResultEdits(resultTab, edited)
+  if (resultTab) await saveResultEdits(resultTab, edited, mutations)
 }
 async function sortPagedResult(resultTab: ResultTab, column: string, direction: 'asc' | 'desc') {
   const page = pagedQueries[resultTab.id]

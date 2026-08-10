@@ -10,6 +10,7 @@ type ResultTab = {
   editing: boolean
   sources?: { columns: string[] }[]
 }
+type GridMutations = { insertedRows: { row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: Record<string, unknown>[] }
 
 const props = defineProps<{
   tab: WorkspaceTab
@@ -46,7 +47,7 @@ const emit = defineEmits<{
   closeResultTab: [id: string]
   createResultTab: []
   copyResult: [id: string]
-  saveResult: [id: string, result: QueryResult]
+  saveResult: [id: string, result: QueryResult, mutations: GridMutations]
   loadMore: []
   sortResult: [id: string, column: string, direction: 'asc' | 'desc']
   refreshResult: [id: string]
@@ -87,6 +88,6 @@ function resizeHorizontal(event: PointerEvent) {
       <button v-else-if="aiConfigured" type="button" class="absolute inset-y-0 right-0 z-10 w-6 border-l border-line bg-panel text-xs font-medium text-muted hover:bg-canvas hover:text-ink" :title="t('aiAgent.title')" :aria-label="t('aiAgent.title')" style="writing-mode: vertical-rl" @click="emit('showAIAgent')">{{ t('aiAgent.title') }}</button>
     </div>
     <div class="h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-accent" @pointerdown="resizeVertical" />
-    <QueryResults :result-tabs="resultTabs" :active-result-tab-id="activeResultTabId" :loading="running" :loading-more="loadingMoreRows" :can-create-tab="true" :summary="resultSummary" @select-tab="emit('selectResultTab', $event)" @close-tab="emit('closeResultTab', $event)" @create-tab="emit('createResultTab')" @copy="emit('copyResult', $event)" @save="(id, result) => emit('saveResult', id, result)" @load-more="emit('loadMore')" @sort="(id, column, direction) => emit('sortResult', id, column, direction)" @refresh="emit('refreshResult', $event)" />
+    <QueryResults :result-tabs="resultTabs" :active-result-tab-id="activeResultTabId" :loading="running" :loading-more="loadingMoreRows" :can-create-tab="true" :summary="resultSummary" @select-tab="emit('selectResultTab', $event)" @close-tab="emit('closeResultTab', $event)" @create-tab="emit('createResultTab')" @copy="emit('copyResult', $event)" @save="(id, result, mutations) => emit('saveResult', id, result, mutations)" @load-more="emit('loadMore')" @sort="(id, column, direction) => emit('sortResult', id, column, direction)" @refresh="emit('refreshResult', $event)" />
   </div>
 </template>

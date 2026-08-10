@@ -113,6 +113,8 @@ func (a *API) Router() http.Handler {
 				r.Post("/databases/{database}/dump/import", a.importDatabaseDump)
 				r.Post("/dump/import", a.importDump)
 				r.Post("/rows/update", a.updateRow)
+				r.Post("/rows/insert", a.insertRow)
+				r.Post("/rows/delete", a.deleteRow)
 				r.Post("/query/cancel", a.cancelQuery)
 				r.Get("/transaction", a.transactionStatus)
 				r.Post("/transaction/commit", a.commitTransaction)
@@ -546,6 +548,16 @@ type rowUpdateRequest struct {
 	Original map[string]any `json:"original"`
 	Changes  map[string]any `json:"changes"`
 }
+type rowInsertRequest struct {
+	Database string         `json:"database"`
+	Table    string         `json:"table"`
+	Values   map[string]any `json:"values"`
+}
+type rowDeleteRequest struct {
+	Database string         `json:"database"`
+	Table    string         `json:"table"`
+	Original map[string]any `json:"original"`
+}
 
 func (a *API) updateRow(w http.ResponseWriter, r *http.Request) {
 	var req rowUpdateRequest
@@ -599,6 +611,115 @@ func (a *API) updateRow(w http.ResponseWriter, r *http.Request) {
 		a.log.Error("could not store inline update history", "error", err)
 	}
 	respond(w, http.StatusOK, result)
+}
+
+func (a *API) insertRow(w http.ResponseWriter, r *http.Request) {
+	var req rowInsertRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	if err := validateRowTarget(req.Database, req.Table); err != nil {
+		fail(w, err)
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err := a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	modifier, ok := mustRowModifier(a, c.Driver, w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	var result *models.QueryResult
+	if c.Environment == "production" {
+		result, err = modifier.InsertRowInTransaction(ctx, c, req.Database, req.Table, req.Values)
+	} else {
+		result, err = modifier.InsertRow(ctx, c, req.Database, req.Table, req.Values)
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err := a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Inline insert " + req.Database + "." + req.Table, Type: "INSERT", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs, AffectedRows: result.AffectedRows}); err != nil {
+		a.log.Error("could not store inline insert history", "error", err)
+	}
+	respond(w, http.StatusOK, result)
+}
+
+func (a *API) deleteRow(w http.ResponseWriter, r *http.Request) {
+	var req rowDeleteRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	if err := validateRowTarget(req.Database, req.Table); err != nil {
+		fail(w, err)
+		return
+	}
+	if len(req.Original) == 0 {
+		fail(w, fmt.Errorf("original row is required"))
+		return
+	}
+	c, err := a.connection(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if err := a.requireConnected(c.ID); err != nil {
+		fail(w, err)
+		return
+	}
+	modifier, ok := mustRowModifier(a, c.Driver, w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), a.timeout(c))
+	defer cancel()
+	var result *models.QueryResult
+	if c.Environment == "production" {
+		result, err = modifier.DeleteRowInTransaction(ctx, c, req.Database, req.Table, req.Original)
+	} else {
+		result, err = modifier.DeleteRow(ctx, c, req.Database, req.Table, req.Original)
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if result.AffectedRows == 0 {
+		fail(w, fmt.Errorf("the row changed or could not be found; refresh and try again"))
+		return
+	}
+	if err := a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Inline delete " + req.Database + "." + req.Table, Type: "DELETE", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs, AffectedRows: result.AffectedRows}); err != nil {
+		a.log.Error("could not store inline delete history", "error", err)
+	}
+	respond(w, http.StatusOK, result)
+}
+
+func validateRowTarget(databaseName, table string) error {
+	if err := database.ValidateIdentifier(databaseName); err != nil {
+		return err
+	}
+	return database.ValidateIdentifier(table)
+}
+
+func mustRowModifier(a *API, driver string, w http.ResponseWriter) (database.RowModifier, bool) {
+	p, err := a.providers.Get(driver)
+	if err != nil {
+		fail(w, err)
+		return nil, false
+	}
+	modifier, ok := p.(database.RowModifier)
+	if !ok {
+		fail(w, fmt.Errorf("inline row actions are not supported by %s", driver))
+		return nil, false
+	}
+	return modifier, true
 }
 
 func (a *API) query(w http.ResponseWriter, r *http.Request) {

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import type { DatabaseInfo, QueryResult, SchemaDiagram, TableInfo, TableStructure } from '~/types/database'
+import type { ColumnInfo, DatabaseInfo, QueryResult, SchemaDiagram, TableInfo, TableStructure } from '~/types/database'
 import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits } from '~/utils/queryResult'
 import { parseTableImport, tableInsertStatements, type ImportedTableRows } from '~/utils/tableTransfer'
 
 type TableSection = 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl' | 'diagram' | 'tools'
 type TableToolsSection = 'import' | 'export' | 'migration' | 'maintenance' | 'danger'
+type ColumnEditorMode = 'add' | 'edit'
 
 const props = defineProps<{ connectionId: string; database: string; table: string; activeSection?: TableSection }>()
 const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-database': [database: string]; 'open-table': [table: string]; databaseDeleted: [connectionId: string, database: string] }>()
@@ -52,6 +53,12 @@ const showMigrationTruncateConfirmation = ref(false)
 const showDeleteDatabaseConfirmation = ref(false)
 const deletingDatabase = ref(false)
 const toolsSection = ref<TableToolsSection>('import')
+const showColumnEditor = ref(false)
+const columnEditorMode = ref<ColumnEditorMode>('add')
+const alteringColumn = ref(false)
+const showDropColumnConfirmation = ref(false)
+const columnPendingDelete = ref<ColumnInfo>()
+const columnForm = reactive({ originalName: '', name: '', type: 'varchar(255)', nullable: true, defaultValue: '', extra: '' })
 
 // Double-clicking a cell opens the editor, so `dataEditing` alone does not mean
 // there is anything to lose. Only pending changes may block reloading the grid.
@@ -184,6 +191,73 @@ const sourceDatabaseOptions = computed(() => sourceDatabases.value.map((database
 const sourceTableOptions = computed(() => sourceTables.value.map((item) => ({ value: item.name, label: item.name })))
 function tableNameSQL() { return `\`${props.database.replaceAll('`', '``')}\`.\`${props.table.replaceAll('`', '``')}\`` }
 function databaseNameSQL() { return `\`${props.database.replaceAll('`', '``')}\`` }
+function columnNameSQL(name: string) { return `\`${name.replaceAll('`', '``')}\`` }
+function resetColumnForm() { Object.assign(columnForm, { originalName: '', name: '', type: 'varchar(255)', nullable: true, defaultValue: '', extra: '' }) }
+function openAddColumn() {
+  if (dataDirty.value) { notifyError(t('table.structureSaveDataFirst')); return }
+  resetColumnForm()
+  columnEditorMode.value = 'add'
+  showColumnEditor.value = true
+}
+function openEditColumn(column: ColumnInfo) {
+  if (dataDirty.value) { notifyError(t('table.structureSaveDataFirst')); return }
+  Object.assign(columnForm, { originalName: column.name, name: column.name, type: column.columnType, nullable: column.nullable, defaultValue: column.default ?? '', extra: column.extra })
+  columnEditorMode.value = 'edit'
+  showColumnEditor.value = true
+}
+function closeColumnEditor() { if (!alteringColumn.value) showColumnEditor.value = false }
+function columnDefinitionSQL() {
+  const type = columnForm.type.trim()
+  const extra = columnForm.extra.trim()
+  if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(columnForm.name.trim())) throw new Error(t('table.structureInvalidName'))
+  if (!type || /;|--|#|\/\*|\*\//.test(type) || /;|--|#|\/\*|\*\//.test(extra)) throw new Error(t('table.structureInvalidDefinition'))
+  const parts = [`${columnNameSQL(columnForm.name.trim())} ${type}`, columnForm.nullable ? 'NULL' : 'NOT NULL']
+  const defaultValue = columnForm.defaultValue.trim()
+  if (defaultValue) {
+    const isExpression = /^(?:NULL|CURRENT_TIMESTAMP(?:\(\d*\))?|CURRENT_DATE|CURRENT_TIME|CURRENT_USER|LOCALTIME(?:\(\d*\))?|LOCALTIMESTAMP(?:\(\d*\))?)$/i.test(defaultValue)
+    const isNumber = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(defaultValue)
+    const isQuoted = /^(?:'.*'|".*"|b'.*'|x'.*')$/is.test(defaultValue)
+    parts.push(`DEFAULT ${isExpression || isNumber || isQuoted ? defaultValue : `'${defaultValue.replaceAll("'", "''")}'`}`)
+  }
+  if (extra) parts.push(extra)
+  return parts.join(' ')
+}
+async function saveColumn() {
+  if (alteringColumn.value || dataDirty.value) { if (dataDirty.value) notifyError(t('table.structureSaveDataFirst')); return }
+  alteringColumn.value = true
+  try {
+    const definition = columnDefinitionSQL()
+    const sql = columnEditorMode.value === 'add'
+      ? `ALTER TABLE ${tableNameSQL()} ADD COLUMN ${definition}`
+      : `ALTER TABLE ${tableNameSQL()} CHANGE COLUMN ${columnNameSQL(columnForm.originalName)} ${definition}`
+    const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql, historySql: columnEditorMode.value === 'add' ? `Add column ${columnForm.name} to ${props.database}.${props.table}` : `Edit column ${columnForm.originalName} in ${props.database}.${props.table}` } })
+    if (response.transactionPending) emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
+    showColumnEditor.value = false
+    dataEditing.value = false
+    await Promise.all([loadStructure(), loadData()])
+    notifySuccess(t(columnEditorMode.value === 'add' ? 'table.structureAddSuccess' : 'table.structureEditSuccess', { column: columnForm.name }))
+  } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
+  finally { alteringColumn.value = false }
+}
+function requestDropColumn(column: ColumnInfo) {
+  if (dataDirty.value) { notifyError(t('table.structureSaveDataFirst')); return }
+  columnPendingDelete.value = column
+  showDropColumnConfirmation.value = true
+}
+async function dropColumn() {
+  const column = columnPendingDelete.value
+  showDropColumnConfirmation.value = false
+  if (!column || alteringColumn.value) return
+  alteringColumn.value = true
+  try {
+    const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `ALTER TABLE ${tableNameSQL()} DROP COLUMN ${columnNameSQL(column.name)}`, historySql: `Drop column ${column.name} from ${props.database}.${props.table}` } })
+    if (response.transactionPending) emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
+    dataEditing.value = false
+    await Promise.all([loadStructure(), loadData()])
+    notifySuccess(t('table.structureDropSuccess', { column: column.name }))
+  } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
+  finally { alteringColumn.value = false; columnPendingDelete.value = undefined }
+}
 async function runMaintenance(action: 'check' | 'analyze' | 'repair' | 'truncate') {
   const statements = { check: `CHECK TABLE ${tableNameSQL()}`, analyze: `ANALYZE TABLE ${tableNameSQL()}`, repair: `REPAIR TABLE ${tableNameSQL()}`, truncate: `TRUNCATE TABLE ${tableNameSQL()}` }
   maintenanceRunning.value = action
@@ -393,7 +467,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
       </div>
       <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="displayedResult" :editable="!dataSearchActive" :loading="loading" :view="dataView" :editing="dataEditing" :sortable="true" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
     </template>
-    <div v-else-if="section === 'structure'" class="scrollbar overflow-auto p-4"><table class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.column') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.nullable') }}</th><th class="border-b border-line p-2">{{ t('table.key') }}</th><th class="border-b border-line p-2">{{ t('table.default') }}</th></tr></thead><tbody><tr v-for="column in structure?.columns" :key="column.name"><td class="border-b border-line p-2 font-medium">{{ column.name }}</td><td class="border-b border-line p-2 text-muted">{{ column.columnType }}</td><td class="border-b border-line p-2">{{ column.nullable ? t('table.yes') : t('table.no') }}</td><td class="border-b border-line p-2">{{ column.key || '—' }}</td><td class="border-b border-line p-2">{{ column.default || '—' }}</td></tr></tbody></table></div>
+    <div v-else-if="section === 'structure'" class="scrollbar overflow-auto p-4">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <p class="text-sm text-muted">{{ t('table.structureDescription') }}</p>
+        <button type="button" class="inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="alteringColumn" @click="openAddColumn"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" />{{ t('table.structureAdd') }}</button>
+      </div>
+      <table class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.column') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.nullable') }}</th><th class="border-b border-line p-2">{{ t('table.key') }}</th><th class="border-b border-line p-2">{{ t('table.default') }}</th><th class="border-b border-line p-2"><span class="sr-only">{{ t('grid.actions') }}</span></th></tr></thead><tbody><tr v-for="column in structure?.columns" :key="column.name"><td class="border-b border-line p-2 font-medium">{{ column.name }}</td><td class="border-b border-line p-2 text-muted">{{ column.columnType }}</td><td class="border-b border-line p-2">{{ column.nullable ? t('table.yes') : t('table.no') }}</td><td class="border-b border-line p-2">{{ column.key || '—' }}</td><td class="border-b border-line p-2">{{ column.default || '—' }}</td><td class="border-b border-line p-2"><div class="flex justify-end gap-1"><button type="button" class="grid rounded p-1.5 text-muted hover:bg-canvas hover:text-ink disabled:opacity-50" :title="t('table.structureEdit')" :aria-label="t('table.structureEdit')" :disabled="alteringColumn" @click="openEditColumn(column)"><Icon name="lucide:pencil" class="h-4 w-4" aria-hidden="true" /></button><button type="button" class="grid rounded p-1.5 text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :title="t('table.structureDrop')" :aria-label="t('table.structureDrop')" :disabled="alteringColumn" @click="requestDropColumn(column)"><Icon name="lucide:trash-2" class="h-4 w-4" aria-hidden="true" /></button></div></td></tr></tbody></table>
+    </div>
     <div v-else-if="section === 'constraints'" class="scrollbar overflow-auto p-4"><table v-if="constraints.length" class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.name') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.columns') }}</th></tr></thead><tbody><tr v-for="constraint in constraints" :key="constraint.name"><td class="border-b border-line p-2 font-medium">{{ constraint.name }}</td><td class="border-b border-line p-2">{{ constraint.type }}</td><td class="border-b border-line p-2 text-muted">{{ constraint.columns?.join(', ') || '—' }}</td></tr></tbody></table><p v-else class="text-sm text-muted">{{ t('table.empty') }}</p></div>
     <div v-else-if="section === 'foreignKeys'" class="scrollbar overflow-auto p-4"><table v-if="foreignKeys.length" class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.name') }}</th><th class="border-b border-line p-2">{{ t('table.column') }}</th><th class="border-b border-line p-2">{{ t('table.references') }}</th></tr></thead><tbody><tr v-for="foreignKey in foreignKeys" :key="`${foreignKey.name}:${foreignKey.column}`"><td class="border-b border-line p-2 font-medium">{{ foreignKey.name }}</td><td class="border-b border-line p-2">{{ foreignKey.column }}</td><td class="border-b border-line p-2 text-muted">{{ foreignKey.referencedTable }}.{{ foreignKey.referencedColumn }}</td></tr></tbody></table><p v-else class="text-sm text-muted">{{ t('table.empty') }}</p></div>
     <div v-else-if="section === 'references'" class="scrollbar overflow-auto p-4"><table v-if="references.length" class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.name') }}</th><th class="border-b border-line p-2">{{ t('table.table') }}</th><th class="border-b border-line p-2">{{ t('table.column') }}</th><th class="border-b border-line p-2">{{ t('table.references') }}</th></tr></thead><tbody><tr v-for="reference in references" :key="`${reference.database}:${reference.table}:${reference.name}:${reference.column}`"><td class="border-b border-line p-2 font-medium">{{ reference.name }}</td><td class="border-b border-line p-2">{{ reference.database }}.{{ reference.table }}</td><td class="border-b border-line p-2">{{ reference.column }}</td><td class="border-b border-line p-2 text-muted">{{ table }}.{{ reference.referencedColumn }}</td></tr></tbody></table><p v-else class="text-sm text-muted">{{ t('table.empty') }}</p></div>
@@ -420,10 +500,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
     </div>
     <div v-else-if="section === 'diagram'" class="min-h-0 flex-1"><ErDiagram :tables="diagramTables" :focus-table="table" :loading="diagramLoading" @open-table="emit('open-table', $event)" /></div>
     <div v-else class="flex min-h-0 flex-1 flex-col"><div class="flex items-center justify-end border-b border-line px-4 py-2"><button type="button" class="grid rounded p-1 hover:bg-canvas disabled:opacity-60" :title="ddlCopied ? t('grid.copied') : t('grid.copy')" :aria-label="ddlCopied ? t('grid.copied') : t('grid.copy')" :disabled="!structure?.ddl" @click="copyDDL"><Icon :name="ddlCopied ? 'lucide:check' : 'lucide:copy'" class="h-4 w-4" aria-hidden="true" /></button></div><pre ref="ddlEl" tabindex="0" class="scrollbar flex-1 overflow-auto whitespace-pre-wrap p-4 font-mono text-xs outline-none" @keydown="selectAllDdl">{{ structure?.ddl || t('table.loadingDdl') }}</pre></div>
+    <Teleport to="body">
+      <div v-if="showColumnEditor" class="fixed inset-0 z-[60] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm" @mousedown.self="closeColumnEditor">
+        <form class="w-full max-w-lg overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl" @submit.prevent="saveColumn">
+          <div class="p-6"><h2 class="text-base font-semibold tracking-tight">{{ t(columnEditorMode === 'add' ? 'table.structureAddTitle' : 'table.structureEditTitle') }}</h2><p class="mt-2 text-sm leading-6 text-muted">{{ t('table.structureEditorDescription') }}</p><div class="mt-5 grid gap-4 sm:grid-cols-2"><label class="grid gap-1.5 text-sm font-medium">{{ t('table.name') }}<input v-model.trim="columnForm.name" class="rounded-md border border-line bg-canvas px-3 py-2 text-ink outline-none focus:border-accent" required autofocus :disabled="alteringColumn" :placeholder="t('table.structureNamePlaceholder')"></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.type') }}<input v-model.trim="columnForm.type" class="rounded-md border border-line bg-canvas px-3 py-2 font-mono text-ink outline-none focus:border-accent" required :disabled="alteringColumn" placeholder="varchar(255)"></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.default') }}<input v-model="columnForm.defaultValue" class="rounded-md border border-line bg-canvas px-3 py-2 text-ink outline-none focus:border-accent" :disabled="alteringColumn" :placeholder="t('table.structureDefaultPlaceholder')"></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.structureExtra') }}<input v-model.trim="columnForm.extra" class="rounded-md border border-line bg-canvas px-3 py-2 font-mono text-ink outline-none focus:border-accent" :disabled="alteringColumn" :placeholder="t('table.structureExtraPlaceholder')"></label></div><label class="mt-4 flex items-center gap-2 text-sm"><input v-model="columnForm.nullable" type="checkbox" :disabled="alteringColumn"><span>{{ t('table.nullable') }}</span></label></div>
+          <div class="flex flex-col-reverse gap-2 border-t border-line bg-canvas/40 px-5 py-4 sm:flex-row sm:justify-end"><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-muted hover:bg-panel hover:text-ink" :disabled="alteringColumn" @click="closeColumnEditor">{{ t('common.close') }}</button><button type="submit" class="rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-50" :disabled="alteringColumn">{{ alteringColumn ? t('table.structureSaving') : t('common.save') }}</button></div>
+        </form>
+      </div>
+    </Teleport>
     <AppConfirmDialog v-model="showTruncateConfirmation" :title="t('table.tools.truncateTitle')" :description="t('table.tools.truncateDescription', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmTruncate" />
     <AppConfirmDialog v-model="showMigrationTruncateConfirmation" :title="t('table.tools.truncateBeforeTitle')" :description="t('table.tools.truncateBeforeConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncateAndMigrate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmMigrationTruncate" />
     <AppConfirmDialog v-model="showImportTruncateConfirmation" :title="t('table.tools.truncateBeforeImportTitle')" :description="t('table.tools.truncateBeforeImportConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncateAndImport')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmImportTruncate" />
     <AppConfirmDialog v-model="showDeleteDatabaseConfirmation" :title="t('table.tools.deleteDatabaseConfirmTitle')" :description="t('table.tools.deleteDatabaseConfirm', { database })" :confirm-label="t('table.tools.deleteDatabase')" :cancel-label="t('common.close')" tone="danger" @confirm="deleteDatabase" />
+    <AppConfirmDialog v-model="showDropColumnConfirmation" :title="t('table.structureDropTitle')" :description="t('table.structureDropDescription', { column: columnPendingDelete?.name || '', table: `${database}.${table}` })" :confirm-label="t('table.structureDrop')" :cancel-label="t('common.close')" tone="danger" @confirm="dropColumn" />
   </section>
 </template>
 
@@ -432,4 +521,5 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
 .tools-nav-active { @apply bg-accent/10 font-medium text-accent hover:bg-accent/10 hover:text-accent; }
 .tools-nav-danger { @apply text-rose-600 hover:bg-rose-500/10 hover:text-rose-600; }
 .tools-nav-danger-active { @apply bg-rose-500/10 font-medium text-rose-600 hover:bg-rose-500/10 hover:text-rose-600; }
+.scrollbar th, .scrollbar td { @apply p-1; }
 </style>

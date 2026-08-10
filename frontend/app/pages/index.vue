@@ -316,7 +316,8 @@ async function connect() {
 }
 
 function createResultTab(workspaceTabId: string) {
-  const tabs = resultTabs[workspaceTabId] || (resultTabs[workspaceTabId] = [])
+  if (!resultTabs[workspaceTabId]) resultTabs[workspaceTabId] = []
+  const tabs = resultTabs[workspaceTabId]!
   const resultTab: ResultTab = { id: `result:${workspaceTabId}:${Date.now()}:${nextResultTabId++}`, title: t('query.resultTab', { count: tabs.length + 1 }), view: 'table', copied: false, editing: false }
   tabs.push(resultTab)
   const reactiveResultTab = tabs.at(-1)!

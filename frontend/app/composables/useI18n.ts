@@ -115,6 +115,52 @@ Object.assign(messages['en-US'], {
   'database.tools.importSuccess': 'Dump imported into {database}.',
 })
 
+Object.assign(messages['pt-BR'], {
+  'table.structureDescription': 'Adicione, edite ou remova as colunas desta tabela.',
+  'table.structureAdd': 'Adicionar coluna',
+  'table.structureAddTitle': 'Adicionar coluna',
+  'table.structureEdit': 'Editar coluna',
+  'table.structureEditTitle': 'Editar coluna',
+  'table.structureEditorDescription': 'Informe a definição da coluna. O tipo e os atributos aceitam a sintaxe do MySQL.',
+  'table.structureNamePlaceholder': 'nova_coluna',
+  'table.structureDefaultPlaceholder': 'Sem padrão',
+  'table.structureExtra': 'Atributos extras',
+  'table.structureExtraPlaceholder': 'ex.: AUTO_INCREMENT',
+  'table.structureSaving': 'Salvando…',
+  'table.structureInvalidName': 'Informe um nome de coluna válido.',
+  'table.structureInvalidDefinition': 'A definição da coluna não pode conter comentários ou múltiplos comandos SQL.',
+  'table.structureSaveDataFirst': 'Salve ou descarte as alterações dos dados antes de modificar a estrutura.',
+  'table.structureAddSuccess': 'Coluna {column} adicionada.',
+  'table.structureEditSuccess': 'Coluna {column} atualizada.',
+  'table.structureDrop': 'Remover coluna',
+  'table.structureDropTitle': 'Remover coluna?',
+  'table.structureDropDescription': 'A coluna {column} e todos os seus dados serão removidos de {table}. Esta ação não pode ser desfeita.',
+  'table.structureDropSuccess': 'Coluna {column} removida.',
+})
+
+Object.assign(messages['en-US'], {
+  'table.structureDescription': 'Add, edit, or remove this table’s columns.',
+  'table.structureAdd': 'Add column',
+  'table.structureAddTitle': 'Add column',
+  'table.structureEdit': 'Edit column',
+  'table.structureEditTitle': 'Edit column',
+  'table.structureEditorDescription': 'Enter the column definition. Type and extra attributes accept MySQL syntax.',
+  'table.structureNamePlaceholder': 'new_column',
+  'table.structureDefaultPlaceholder': 'No default',
+  'table.structureExtra': 'Extra attributes',
+  'table.structureExtraPlaceholder': 'e.g. AUTO_INCREMENT',
+  'table.structureSaving': 'Saving…',
+  'table.structureInvalidName': 'Enter a valid column name.',
+  'table.structureInvalidDefinition': 'The column definition cannot contain comments or multiple SQL statements.',
+  'table.structureSaveDataFirst': 'Save or discard data changes before modifying the structure.',
+  'table.structureAddSuccess': 'Column {column} added.',
+  'table.structureEditSuccess': 'Column {column} updated.',
+  'table.structureDrop': 'Remove column',
+  'table.structureDropTitle': 'Remove column?',
+  'table.structureDropDescription': 'Column {column} and all of its data will be removed from {table}. This cannot be undone.',
+  'table.structureDropSuccess': 'Column {column} removed.',
+})
+
 const updateMessages: Record<Locale, Record<string, string>> = {
   'pt-BR': {
     'update.availableDescription': 'A versão {version} está disponível.',

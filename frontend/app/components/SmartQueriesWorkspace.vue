@@ -4,7 +4,7 @@ import type { Connection, QueryResult, SmartQuery } from '~/types/database'
 type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[] }
 
 const props = defineProps<{ queries: SmartQuery[]; connections: Connection[]; resultTabs: SmartResultTab[]; activeResultTabId?: string; loading?: boolean; loadingMore?: boolean }>()
-const emit = defineEmits<{ run: [query: SmartQuery, values: Record<string, string>, newTab: boolean]; remove: [id: string]; update: [id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql' | 'parameters'>]; openEditor: [query: SmartQuery]; selectResultTab: [id: string]; closeResultTab: [id: string]; copyResult: [id: string]; saveResult: [id: string, result: QueryResult]; loadMore: []; sortResult: [id: string, column: string, direction: 'asc' | 'desc'] }>()
+const emit = defineEmits<{ run: [query: SmartQuery, values: Record<string, string>, newTab: boolean]; remove: [id: string]; update: [id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql' | 'parameters'>]; openEditor: [query: SmartQuery]; selectResultTab: [id: string]; closeResultTab: [id: string]; copyResult: [id: string]; saveResult: [id: string, result: QueryResult]; loadMore: []; sortResult: [id: string, column: string, direction: 'asc' | 'desc']; refreshResult: [id: string] }>()
 const { t } = useI18n()
 const values = reactive<Record<string, Record<string, string>>>({})
 const commandPressed = ref(false)
@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="hasResults" class="h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-accent" @pointerdown="resizeResults" />
     <section v-if="hasResults" class="flex min-h-0 shrink-0 flex-col overflow-hidden border-t border-line bg-panel" :style="{ height: `${resultHeight}%` }">
-      <QueryResults :result-tabs="resultTabs" :active-result-tab-id="activeResultTabId" :loading="loading" :loading-more="loadingMore" :summary="resultSummary" @select-tab="emit('selectResultTab', $event)" @close-tab="emit('closeResultTab', $event)" @copy="emit('copyResult', $event)" @save="(id, result) => emit('saveResult', id, result)" @load-more="emit('loadMore')" @sort="(id, column, direction) => emit('sortResult', id, column, direction)" />
+      <QueryResults :result-tabs="resultTabs" :active-result-tab-id="activeResultTabId" :loading="loading" :loading-more="loadingMore" :summary="resultSummary" @select-tab="emit('selectResultTab', $event)" @close-tab="emit('closeResultTab', $event)" @copy="emit('copyResult', $event)" @save="(id, result) => emit('saveResult', id, result)" @load-more="emit('loadMore')" @sort="(id, column, direction) => emit('sortResult', id, column, direction)" @refresh="emit('refreshResult', $event)" />
     </section>
   </section>
   <Teleport to="body">

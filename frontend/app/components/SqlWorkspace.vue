@@ -8,9 +8,10 @@ type ResultTab = {
   view: 'table' | 'json' | 'csv'
   copied: boolean
   editing: boolean
-  sources?: { columns: string[] }[]
+  dirty?: boolean
+  sources?: { columns: string[]; primaryKey?: string[] }[]
 }
-type GridMutations = { insertedRows: { row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: Record<string, unknown>[] }
+type GridMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 
 const props = defineProps<{
   tab: WorkspaceTab

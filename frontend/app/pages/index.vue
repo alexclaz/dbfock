@@ -4,7 +4,7 @@ import { queryResultAsCSV, queryResultAsJSON, queryResultAsTSV, queryResultEdits
 import { quoteIdentifier } from '~/utils/tableTransfer'
 
 type EditableResultSource = { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }
-type ResultRowMutations = { insertedRows: { row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: Record<string, unknown>[] }
+type ResultRowMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 
 type ResultTab = {
   id: string
@@ -13,6 +13,7 @@ type ResultTab = {
   view: 'table' | 'json' | 'csv'
   copied: boolean
   editing: boolean
+  dirty?: boolean
   sources?: EditableResultSource[]
   sortColumn?: string
   sortDirection?: 'asc' | 'desc'
@@ -318,7 +319,7 @@ async function connect() {
 function createResultTab(workspaceTabId: string) {
   if (!resultTabs[workspaceTabId]) resultTabs[workspaceTabId] = []
   const tabs = resultTabs[workspaceTabId]!
-  const resultTab: ResultTab = { id: `result:${workspaceTabId}:${Date.now()}:${nextResultTabId++}`, title: t('query.resultTab', { count: tabs.length + 1 }), view: 'table', copied: false, editing: false }
+  const resultTab: ResultTab = { id: `result:${workspaceTabId}:${Date.now()}:${nextResultTabId++}`, title: t('query.resultTab', { count: tabs.length + 1 }), view: 'table', copied: false, editing: false, dirty: false }
   tabs.push(resultTab)
   const reactiveResultTab = tabs.at(-1)!
   activeResultTabIds[workspaceTabId] = reactiveResultTab.id
@@ -377,6 +378,7 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
   activeQueries.set(resultTab.id, { connectionId, requestId, controller })
   runningQueryCount.value += 1
   resultTab.editing = false
+  resultTab.dirty = false
   resultTab.sources = undefined
   resultTab.sortColumn = undefined
   resultTab.sortDirection = undefined
@@ -438,7 +440,7 @@ function smartQuerySQL(query: SmartQuery, values: Record<string, string>) {
 function createSmartResultTab(query: SmartQuery) {
   const { connectionId, id: smartQueryId, title } = query
   const tabsForConnection = smartResultTabs.filter((tab) => tab.connectionId === connectionId)
-  const resultTab: SmartResultTab = { id: `smart-result:${connectionId}:${Date.now()}:${nextResultTabId++}`, title: title || t('query.resultTab', { count: tabsForConnection.length + 1 }), connectionId, smartQueryId, view: 'table', copied: false, editing: false }
+  const resultTab: SmartResultTab = { id: `smart-result:${connectionId}:${Date.now()}:${nextResultTabId++}`, title: title || t('query.resultTab', { count: tabsForConnection.length + 1 }), connectionId, smartQueryId, view: 'table', copied: false, editing: false, dirty: false }
   smartResultTabs.push(resultTab)
   const reactiveResultTab = smartResultTabs.at(-1)!
   activeSmartResultTabIds[connectionId] = reactiveResultTab.id
@@ -570,8 +572,10 @@ async function saveResultEdits(resultTab: ResultTab, edited: QueryResult, mutati
   const originalResult = resultTab.result
   try {
     let transaction: QueryResult | undefined
-    const originalRows = originalResult.rows.filter((row) => !mutations.deletedRows.some((deleted) => samePrimaryKey(row, deleted, sources[0]!.primaryKey)))
-    const editedRows = edited.rows.slice(0, Math.max(0, edited.rows.length - mutations.insertedRows.length))
+    const deletedIndexes = new Set(mutations.deletedRows.map((deleted) => deleted.index))
+    const insertedIndexes = new Set(mutations.insertedRows.map((inserted) => inserted.index))
+    const originalRows = originalResult.rows.filter((row) => !mutations.deletedRows.some((deleted) => samePrimaryKey(row, deleted.row, sources[0]!.primaryKey)))
+    const editedRows = edited.rows.filter((_, index) => !deletedIndexes.has(index) && !insertedIndexes.has(index))
     const originalForUpdates = { ...originalResult, rows: originalRows, rowCount: originalRows.length }
     const editedForUpdates = { ...edited, rows: editedRows, rowCount: editedRows.length }
     for (const source of sources) {
@@ -581,7 +585,7 @@ async function saveResultEdits(resultTab: ResultTab, edited: QueryResult, mutati
     if (sources.length === 1) {
       const source = sources[0]!
       for (const inserted of mutations.insertedRows) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/insert`, { method: 'POST', body: { database: source.database, table: source.table, values: insertValues(inserted.row, source, inserted.useDefaults) } })
-      for (const deleted of mutations.deletedRows) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/delete`, { method: 'POST', body: { database: source.database, table: source.table, original: Object.fromEntries(source.primaryKey.map((column) => [column, deleted[column]])) } })
+      for (const deleted of mutations.deletedRows) transaction = await api<QueryResult>(`/connections/${source.connectionId}/rows/delete`, { method: 'POST', body: { database: source.database, table: source.table, original: Object.fromEntries(source.primaryKey.map((column) => [column, deleted.row[column]])) } })
     }
     if (resultTab.result === originalResult) {
       resultTab.result = edited

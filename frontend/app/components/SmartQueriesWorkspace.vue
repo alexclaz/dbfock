@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Connection, QueryResult, SmartQuery } from '~/types/database'
 
-type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[] }
-type GridMutations = { insertedRows: { row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: Record<string, unknown>[] }
+type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; dirty?: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[] }
+type GridMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 
 const props = defineProps<{ queries: SmartQuery[]; connections: Connection[]; resultTabs: SmartResultTab[]; activeResultTabId?: string; loading?: boolean; loadingMore?: boolean }>()
 const emit = defineEmits<{ run: [query: SmartQuery, values: Record<string, string>, newTab: boolean]; remove: [id: string]; update: [id: string, changes: Pick<SmartQuery, 'title' | 'description' | 'sql' | 'parameters'>]; openEditor: [query: SmartQuery]; selectResultTab: [id: string]; closeResultTab: [id: string]; copyResult: [id: string]; saveResult: [id: string, result: QueryResult, mutations: GridMutations]; loadMore: []; sortResult: [id: string, column: string, direction: 'asc' | 'desc']; refreshResult: [id: string] }>()

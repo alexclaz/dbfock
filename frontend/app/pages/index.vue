@@ -13,8 +13,11 @@ type ResultTab = {
   copied: boolean
   editing: boolean
   sources?: EditableResultSource[]
+  sortColumn?: string
+  sortDirection?: 'asc' | 'desc'
 }
 type SmartResultTab = ResultTab & { connectionId: string; smartQueryId: string }
+type PagedQuery = { connectionId: string; sql: string; requestId: string; database?: string; sortColumn?: string; sortDirection?: 'asc' | 'desc' }
 type AISettings = { configured: boolean }
 type PendingSave = { initialValue: string; save: (name: string) => Promise<boolean>; resolve: (saved: boolean) => void }
 type PendingConfirmation = { title: string; description: string; confirmLabel: string; cancelLabel?: string; tone?: 'default' | 'danger'; resolve: (confirmed: boolean) => void }
@@ -47,7 +50,7 @@ const committing = ref(false)
 const queryPageSize = 200
 const resultTabs = reactive<Record<string, ResultTab[]>>({})
 const activeResultTabIds = reactive<Record<string, string | undefined>>({})
-const pagedQueries = reactive<Record<string, { connectionId: string; sql: string; requestId: string; database?: string } | undefined>>({})
+const pagedQueries = reactive<Record<string, PagedQuery | undefined>>({})
 const smartResultTabs = reactive<SmartResultTab[]>([])
 const activeSmartResultTabIds = reactive<Record<string, string | undefined>>({})
 const recentlyClosedTabs = ref<WorkspaceTab[]>([])
@@ -372,6 +375,8 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
   runningQueryCount.value += 1
   resultTab.editing = false
   resultTab.sources = undefined
+  resultTab.sortColumn = undefined
+  resultTab.sortDirection = undefined
   queryError.value = ''
   delete pagedQueries[resultTab.id]
   try {
@@ -473,7 +478,7 @@ async function loadMoreSmartRows() {
   smartQueryError.value = ''
   try {
     const offset = current.rows.length
-    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true, database: page.database } }))
+    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset, page.sortColumn, page.sortDirection), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true, database: page.database } }))
     if (resultTab.result !== current || pagedQueries[resultTab.id] !== page) return
     resultTab.result = { ...current, rows: [...current.rows, ...result.rows], rowCount: current.rows.length + result.rows.length, hasMore: result.hasMore }
   } catch (error: any) { smartQueryError.value = error.message }
@@ -491,6 +496,8 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
     }
     const resultTab = newTab ? createSmartResultTab(query) : currentOrNewSmartResultTab(query)
     resultTab.title = query.title
+    resultTab.sortColumn = undefined
+    resultTab.sortDirection = undefined
     smartQueryRunning.value = true
     smartQueryError.value = ''
     delete pagedQueries[resultTab.id]
@@ -510,9 +517,10 @@ function openSmartQueryInEditor(query: SmartQuery) {
   workspace.openTab({ id: `sql:${query.connectionId}:${Date.now()}`, title: query.title, type: 'sql', connectionId: query.connectionId, executionConnectionId: query.connectionId, sql: query.sql })
 }
 
-function pagedSQL(sql: string, offset: number) {
+function pagedSQL(sql: string, offset: number, sortColumn?: string, sortDirection?: 'asc' | 'desc') {
   const statement = sql.trim().replace(/;+\s*$/, '')
-  return `SELECT * FROM (${statement}) AS \`dbfock_page\` LIMIT ${queryPageSize + 1} OFFSET ${offset}`
+  const order = sortColumn ? ` ORDER BY ${quoteIdentifier(sortColumn)} ${sortDirection === 'desc' ? 'DESC' : 'ASC'}` : ''
+  return `SELECT * FROM (${statement}) AS \`dbfock_page\`${order} LIMIT ${queryPageSize + 1} OFFSET ${offset}`
 }
 function pageResult(result: QueryResult): QueryResult {
   const hasMore = result.rows.length > queryPageSize
@@ -580,6 +588,36 @@ async function saveActiveResultEdits(id: string, edited: QueryResult) {
   const resultTab = activeResultTabs.value.find((tab) => tab.id === id)
   if (resultTab) await saveResultEdits(resultTab, edited)
 }
+async function sortPagedResult(resultTab: ResultTab, column: string, direction: 'asc' | 'desc') {
+  const page = pagedQueries[resultTab.id]
+  const current = resultTab.result
+  if (!page || !current || loadingMoreRows.value) return
+  pagedQueries[resultTab.id] = { ...page, sortColumn: column, sortDirection: direction }
+  const sortedPage = pagedQueries[resultTab.id]!
+  loadingMoreRows.value = true
+  try {
+    const result = pageResult(await api<QueryResult>(`/connections/${sortedPage.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(sortedPage.sql, 0, column, direction), historySql: sortedPage.sql, requestId: `${sortedPage.requestId}:sort:${column}:${direction}`, skipHistory: true, database: sortedPage.database } }))
+    if (pagedQueries[resultTab.id] !== sortedPage || resultTab.result !== current) return
+    resultTab.result = result
+    resultTab.sortColumn = column
+    resultTab.sortDirection = direction
+  } catch (error: any) {
+    if (pagedQueries[resultTab.id] === sortedPage) pagedQueries[resultTab.id] = page
+    throw error
+  } finally { loadingMoreRows.value = false }
+}
+async function sortActiveResult(id: string, column: string, direction: 'asc' | 'desc') {
+  const resultTab = activeResultTabs.value.find((tab) => tab.id === id)
+  if (!resultTab) return
+  try { await sortPagedResult(resultTab, column, direction) }
+  catch (error: any) { queryError.value = error.message }
+}
+async function sortSmartResult(id: string, column: string, direction: 'asc' | 'desc') {
+  const resultTab = smartResultTabs.find((tab) => tab.id === id)
+  if (!resultTab) return
+  try { await sortPagedResult(resultTab, column, direction) }
+  catch (error: any) { smartQueryError.value = error.message }
+}
 async function loadMoreRows() {
   const resultTab = activeResultTab.value
   if (!resultTab) return
@@ -590,7 +628,7 @@ async function loadMoreRows() {
   queryError.value = ''
   try {
     const offset = current.rows.length
-    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true, database: page.database } }))
+    const result = pageResult(await api<QueryResult>(`/connections/${page.connectionId}/query`, { method: 'POST', body: { sql: pagedSQL(page.sql, offset, page.sortColumn, page.sortDirection), historySql: page.sql, requestId: `${page.requestId}:page:${offset}`, skipHistory: true, database: page.database } }))
     if (resultTab.result !== current || pagedQueries[resultTab.id] !== page) return
     resultTab.result = { ...current, rows: [...current.rows, ...result.rows], rowCount: current.rows.length + result.rows.length, hasMore: result.hasMore }
   } catch (error: any) { queryError.value = error.message }
@@ -794,14 +832,14 @@ watch(() => workspace.activeConnectionId, () => {
         </div>
         <KeepAlive v-else :max="12">
           <SavedQueriesWorkspace v-if="activeTab.type === 'saved'" :queries="connectionSavedQueries" :connections="workspace.connections" @open="openSavedQueryById" @remove="removeSavedQuery" />
-          <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" />
+          <SmartQueriesWorkspace v-else-if="activeTab.type === 'smart'" :queries="connectionSmartQueries" :connections="workspace.connections" :result-tabs="connectionSmartResultTabs" :active-result-tab-id="activeSmartResultTabId" :loading="smartQueryRunning" :loading-more="loadingMoreRows" @run="runSmartQuery" @remove="removeSmartQuery" @update="updateSmartQuery" @open-editor="openSmartQueryInEditor" @select-result-tab="selectSmartResultTab" @close-result-tab="closeSmartResultTab" @copy-result="copySmartResult" @save-result="saveSmartResultEdits" @load-more="loadMoreSmartRows" @sort-result="sortSmartResult" />
           <QueryHistoryWorkspace v-else-if="activeTab.type === 'history'" :tabs="workspace.queryTabHistory" :queries="history" :connections="workspace.connections" @open-tab="reopenQueryTab" @remove-tab="removeQueryTabHistory" @open="openHistoryQuery" @save="saveHistoryQuery" @remove="removeHistoryQuery" />
           <TableWorkspace v-else-if="activeTab.type === 'table' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`table:${activeTab.id}:${workspace.tabEpoch(activeTab.id)}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :table="activeTab.table!" :active-section="activeTab.tableSection" @update:active-section="updateTableSection" @transaction-status="updateTransactionStatus" @database-deleted="databaseDeleted" @open-database="openDatabaseFromTable" @open-table="openDatabaseTable" />
           <DatabaseWorkspace v-else-if="activeTab.type === 'database' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`database:${activeTab.id}:${workspace.tabEpoch(activeTab.id)}`" :connection-id="activeTab.connectionId!" :database="activeTab.database!" :active-section="activeTab.databaseSection" @table="openDatabaseTable" @update:active-section="updateDatabaseSection" @transaction-status="updateTransactionStatus" @database-deleted="databaseDeleted" />
           <ConnectionHomeWorkspace v-else-if="activeTab.type === 'connection-home' && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`connection-home:${activeTab.id}:${workspace.tabEpoch(activeTab.id)}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" @edit="editing = $event; showConnection = true" @new-query="openSQLForConnection($event.id)" @stats="openStats" @database="openDatabase" />
           <ConnectionStatsWorkspace v-else-if="activeTab.type === 'stats' && activeTab.connectionId && workspace.connections.find((connection) => connection.id === activeTab.connectionId)" :key="`stats:${activeTab.id}:${workspace.tabEpoch(activeTab.id)}`" :connection="workspace.connections.find((connection) => connection.id === activeTab.connectionId)!" />
           <SettingsWorkspace v-else-if="activeTab.type === 'settings'" :section="activeTab.settingsSection" @ai-configured="markAIConfigured" @update:section="updateSettingsSection" />
-          <SqlWorkspace v-else ref="sqlWorkspace" :key="activeTab.id" :tab="activeTab" :connections="workspace.connections" :query-connection="queryConnection" :query-connection-id="queryConnectionId" :show-a-i-agent="showAIAgent" :ai-configured="aiConfigured" :editor-height="editorHeight" :editor-width="editorWidth" :running="running" :loading-more-rows="loadingMoreRows" :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :result-summary="activeResultSummary" @update-sql="updateSQL" @update-execution-connection="updateExecutionConnection" @update-default-database="updateDefaultDatabase" @viewport="updateSQLViewport(activeTab.id, $event.top, $event.left)" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @new-query="newSQL" @save-query="saveQuery" @ai-status="updateAIStatus" @hide-a-i-agent="hideAIAgent" @show-a-i-agent="showHiddenAIAgent" @update-editor-height="editorHeight = $event" @update-editor-width="editorWidth = $event" @select-result-tab="activeResultTabIds[activeTab.id] = $event" @close-result-tab="closeResultTab(activeTab.id, $event)" @create-result-tab="createResultTab(activeTab.id)" @copy-result="copyActiveResult" @save-result="saveActiveResultEdits" @load-more="loadMoreRows" />
+          <SqlWorkspace v-else ref="sqlWorkspace" :key="activeTab.id" :tab="activeTab" :connections="workspace.connections" :query-connection="queryConnection" :query-connection-id="queryConnectionId" :show-a-i-agent="showAIAgent" :ai-configured="aiConfigured" :editor-height="editorHeight" :editor-width="editorWidth" :running="running" :loading-more-rows="loadingMoreRows" :result-tabs="activeResultTabs" :active-result-tab-id="activeResultTab?.id" :result-summary="activeResultSummary" @update-sql="updateSQL" @update-execution-connection="updateExecutionConnection" @update-default-database="updateDefaultDatabase" @viewport="updateSQLViewport(activeTab.id, $event.top, $event.left)" @execute="(sql, newResultTab) => execute(activeTab, sql, newResultTab)" @explain="explainSQL" @create-smart-query="queryConnectionId && createSmartQuery(queryConnectionId, $event)" @improve="improveSQL" @new-query="newSQL" @save-query="saveQuery" @ai-status="updateAIStatus" @hide-a-i-agent="hideAIAgent" @show-a-i-agent="showHiddenAIAgent" @update-editor-height="editorHeight = $event" @update-editor-width="editorWidth = $event" @select-result-tab="activeResultTabIds[activeTab.id] = $event" @close-result-tab="closeResultTab(activeTab.id, $event)" @create-result-tab="createResultTab(activeTab.id)" @copy-result="copyActiveResult" @save-result="saveActiveResultEdits" @load-more="loadMoreRows" @sort-result="sortActiveResult" />
         </KeepAlive>
       </div>
     </section>

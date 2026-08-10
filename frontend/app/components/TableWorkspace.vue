@@ -101,11 +101,10 @@ async function loadData() {
 }
 async function previousPage() { if (page.value === 0 || loading.value) return; page.value--; await loadData() }
 async function nextPage() { if (!result.value?.hasMore || loading.value) return; page.value++; await loadData() }
-async function toggleSort(column: string) {
+async function toggleSort(column: string, direction: 'asc' | 'desc') {
   if (loading.value || dataDirty.value) return
-  if (sortColumn.value !== column) { sortColumn.value = column; sortDirection.value = 'asc' }
-  else if (sortDirection.value === 'asc') { sortDirection.value = 'desc' }
-  else { sortColumn.value = undefined; sortDirection.value = 'asc' }
+  sortColumn.value = column
+  sortDirection.value = direction
   page.value = 0
   await loadData()
 }
@@ -392,7 +391,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
         <span v-if="dataSearchActive" class="shrink-0 text-muted">{{ displayedResult?.rows.length ? t('table.searchMatches', { count: displayedResult.rows.length, total: result?.rows.length || 0 }) : t('table.searchNoMatches') }}</span>
         <button type="button" class="grid shrink-0 rounded p-1 text-muted hover:bg-canvas hover:text-ink" :title="t('table.searchClose')" :aria-label="t('table.searchClose')" @click="closeDataSearch"><Icon name="lucide:x" class="h-4 w-4" aria-hidden="true" /></button>
       </div>
-      <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="displayedResult" :editable="!dataSearchActive" :loading="loading" :view="dataView" :editing="dataEditing" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
+      <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="displayedResult" :editable="!dataSearchActive" :loading="loading" :view="dataView" :editing="dataEditing" :sortable="true" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
     </template>
     <div v-else-if="section === 'structure'" class="scrollbar overflow-auto p-4"><table class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.column') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.nullable') }}</th><th class="border-b border-line p-2">{{ t('table.key') }}</th><th class="border-b border-line p-2">{{ t('table.default') }}</th></tr></thead><tbody><tr v-for="column in structure?.columns" :key="column.name"><td class="border-b border-line p-2 font-medium">{{ column.name }}</td><td class="border-b border-line p-2 text-muted">{{ column.columnType }}</td><td class="border-b border-line p-2">{{ column.nullable ? t('table.yes') : t('table.no') }}</td><td class="border-b border-line p-2">{{ column.key || '—' }}</td><td class="border-b border-line p-2">{{ column.default || '—' }}</td></tr></tbody></table></div>
     <div v-else-if="section === 'constraints'" class="scrollbar overflow-auto p-4"><table v-if="constraints.length" class="min-w-full text-left text-sm"><thead class="text-xs text-muted"><tr><th class="border-b border-line p-2">{{ t('table.name') }}</th><th class="border-b border-line p-2">{{ t('table.type') }}</th><th class="border-b border-line p-2">{{ t('table.columns') }}</th></tr></thead><tbody><tr v-for="constraint in constraints" :key="constraint.name"><td class="border-b border-line p-2 font-medium">{{ constraint.name }}</td><td class="border-b border-line p-2">{{ constraint.type }}</td><td class="border-b border-line p-2 text-muted">{{ constraint.columns?.join(', ') || '—' }}</td></tr></tbody></table><p v-else class="text-sm text-muted">{{ t('table.empty') }}</p></div>

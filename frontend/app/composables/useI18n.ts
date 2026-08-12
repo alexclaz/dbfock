@@ -116,6 +116,42 @@ Object.assign(messages['en-US'], {
 })
 
 Object.assign(messages['pt-BR'], {
+  'database.createTable': 'Criar tabela',
+  'database.createTableTitle': 'Criar tabela',
+  'database.createTableDescription': 'Defina o nome e as colunas iniciais. Depois, você poderá editar a estrutura da tabela.',
+  'database.createTableNamePlaceholder': 'nova_tabela',
+  'database.createTableColumns': 'Colunas',
+  'database.createTableAddColumn': 'Adicionar coluna',
+  'database.createTableRemoveColumn': 'Remover coluna',
+  'database.createTablePrimary': 'Chave primária',
+  'database.createTableAutoIncrement': 'Auto incremento',
+  'database.createTableCreating': 'Criando…',
+  'database.createTableInvalidName': 'Informe um nome de tabela válido.',
+  'database.createTableColumnsRequired': 'Adicione pelo menos uma coluna.',
+  'database.createTableInvalidColumn': 'Informe nomes de coluna válidos e sem repetição.',
+  'database.createTableInvalidDefinition': 'O tipo da coluna não pode conter comentários ou múltiplos comandos SQL.',
+  'database.createTableSuccess': 'Tabela {table} criada.',
+})
+
+Object.assign(messages['en-US'], {
+  'database.createTable': 'Create table',
+  'database.createTableTitle': 'Create table',
+  'database.createTableDescription': 'Set the name and initial columns. You can edit the table structure afterwards.',
+  'database.createTableNamePlaceholder': 'new_table',
+  'database.createTableColumns': 'Columns',
+  'database.createTableAddColumn': 'Add column',
+  'database.createTableRemoveColumn': 'Remove column',
+  'database.createTablePrimary': 'Primary key',
+  'database.createTableAutoIncrement': 'Auto increment',
+  'database.createTableCreating': 'Creating…',
+  'database.createTableInvalidName': 'Enter a valid table name.',
+  'database.createTableColumnsRequired': 'Add at least one column.',
+  'database.createTableInvalidColumn': 'Enter valid, non-duplicate column names.',
+  'database.createTableInvalidDefinition': 'The column type cannot contain comments or multiple SQL statements.',
+  'database.createTableSuccess': 'Table {table} created.',
+})
+
+Object.assign(messages['pt-BR'], {
   'table.structureDescription': 'Adicione, edite ou remova as colunas desta tabela.',
   'table.structureAdd': 'Adicionar coluna',
   'table.structureAddTitle': 'Adicionar coluna',

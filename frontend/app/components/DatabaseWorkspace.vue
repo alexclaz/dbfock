@@ -4,6 +4,7 @@ import { tableInsertStatements } from '~/utils/tableTransfer'
 
 type DatabaseSection = 'tables' | 'diagram' | 'tools'
 type DatabaseToolsSection = 'export' | 'import' | 'migration' | 'maintenance' | 'danger'
+type NewTableColumn = { id: number; name: string; type: string; nullable: boolean; primary: boolean; autoIncrement: boolean }
 
 const props = defineProps<{ connectionId: string; database: string; activeSection?: DatabaseSection }>()
 const emit = defineEmits<{ table: [table: string]; 'update:activeSection': [value: DatabaseSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; databaseDeleted: [connectionId: string, database: string] }>()
@@ -36,6 +37,10 @@ const migrationOptions = reactive({ recreateTarget: false, ignoreDuplicates: fal
 const showRecreateConfirmation = ref(false)
 const showDeleteConfirmation = ref(false)
 const deletingDatabase = ref(false)
+const showCreateTable = ref(false)
+const creatingTable = ref(false)
+const newTable = reactive<{ name: string; columns: NewTableColumn[] }>({ name: '', columns: [] })
+let nextNewColumnId = 1
 
 function messageFor(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
 
@@ -61,6 +66,7 @@ async function loadDiagram() {
 }
 function tableNameSQL(table: string) { return `\`${props.database.replaceAll('`', '``')}\`.\`${table.replaceAll('`', '``')}\`` }
 function databaseNameSQL(name = props.database) { return `\`${name.replaceAll('`', '``')}\`` }
+function identifierSQL(name: string) { return `\`${name.replaceAll('`', '``')}\`` }
 function sourceTablePath(table: string, suffix: 'structure' | 'data') { return `/connections/${source.connectionId}/databases/${encodeURIComponent(source.database)}/tables/${encodeURIComponent(table)}/${suffix}` }
 function createTableSQL(ddl: string, table: string) {
   const name = tableNameSQL(table)
@@ -187,6 +193,50 @@ async function deleteDatabase() {
   } catch (cause: unknown) { notifyError(messageFor(cause)) }
   finally { deletingDatabase.value = false }
 }
+function addNewTableColumn(values: Partial<Omit<NewTableColumn, 'id'>> = {}) {
+  newTable.columns.push({ id: nextNewColumnId++, name: '', type: 'varchar(255)', nullable: true, primary: false, autoIncrement: false, ...values })
+}
+function openCreateTable() {
+  if (creatingTable.value) return
+  newTable.name = ''
+  newTable.columns = []
+  addNewTableColumn({ name: 'id', type: 'bigint unsigned', nullable: false, primary: true, autoIncrement: true })
+  showCreateTable.value = true
+}
+function closeCreateTable() { if (!creatingTable.value) showCreateTable.value = false }
+function removeNewTableColumn(id: number) { if (newTable.columns.length > 1) newTable.columns = newTable.columns.filter((column) => column.id !== id) }
+function newTableSQL() {
+  const name = newTable.name.trim()
+  if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) throw new Error(t('database.createTableInvalidName'))
+  if (!newTable.columns.length) throw new Error(t('database.createTableColumnsRequired'))
+  const names = new Set<string>()
+  const definitions = newTable.columns.map((column) => {
+    const columnName = column.name.trim()
+    const type = column.type.trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(columnName) || names.has(columnName.toLowerCase())) throw new Error(t('database.createTableInvalidColumn'))
+    if (!type || /;|--|#|\/\*|\*\//.test(type)) throw new Error(t('database.createTableInvalidDefinition'))
+    names.add(columnName.toLowerCase())
+    return `${identifierSQL(columnName)} ${type} ${column.nullable ? 'NULL' : 'NOT NULL'}${column.autoIncrement ? ' AUTO_INCREMENT' : ''}`
+  })
+  const primary = newTable.columns.filter((column) => column.primary).map((column) => identifierSQL(column.name.trim()))
+  if (primary.length) definitions.push(`PRIMARY KEY (${primary.join(', ')})`)
+  return `CREATE TABLE ${tableNameSQL(name)} (\n  ${definitions.join(',\n  ')}\n) ENGINE=InnoDB`
+}
+async function createTable() {
+  if (creatingTable.value) return
+  creatingTable.value = true
+  try {
+    const name = newTable.name.trim()
+    const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: newTableSQL(), historySql: `Create table ${props.database}.${name}` } })
+    if (response.transactionPending) emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
+    showCreateTable.value = false
+    diagram.value = undefined
+    await load()
+    notifySuccess(t('database.createTableSuccess', { table: name }))
+    emit('table', name)
+  } catch (cause: unknown) { notifyError(messageFor(cause)) }
+  finally { creatingTable.value = false }
+}
 function selectSection(next: DatabaseSection) {
   section.value = next
   emit('update:activeSection', next)
@@ -220,12 +270,13 @@ watch(() => source.connectionId, async (connectionId) => {
           <button type="button" class="rounded px-2.5 py-1" :class="section === 'tools' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('tools')">{{ t('database.viewTools') }}</button>
       </div>
     </header>
-    <div v-if="section === 'tables'" class="border-b border-line bg-canvas/40 px-5 py-3 lg:px-7">
-      <label class="flex w-full max-w-md items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm">
+    <div v-if="section === 'tables'" class="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-canvas/40 px-5 py-3 lg:px-7">
+      <label class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm sm:max-w-md">
         <Icon name="lucide:search" class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span class="sr-only">{{ t('stats.filter') }}</span>
         <input v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('database.filterPlaceholder')" >
       </label>
+      <button type="button" class="inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="creatingTable" @click="openCreateTable"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" />{{ t('database.createTable') }}</button>
     </div>
 
     <div v-if="section === 'tables'" class="scrollbar min-h-0 flex-1 overflow-auto px-5 py-6 lg:px-7">
@@ -269,6 +320,14 @@ watch(() => source.connectionId, async (connectionId) => {
     <AppConfirmDialog v-model="showRecreateConfirmation" :title="t('database.tools.recreateTargetTitle')" :description="t('database.tools.recreateTargetConfirm', { database })" :confirm-label="t('database.tools.recreateAndMigrate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmRecreateMigration" />
     <AppConfirmDialog v-model="showImportConfirmation" :title="t('database.tools.importConfirmTitle')" :description="t('database.tools.importConfirm', { database })" :confirm-label="t('database.tools.recreateAndImport')" :cancel-label="t('common.close')" tone="danger" @confirm="importDatabaseDump" />
     <AppConfirmDialog v-model="showDeleteConfirmation" :title="t('database.tools.deleteConfirmTitle')" :description="t('database.tools.deleteConfirm', { database })" :confirm-label="t('database.tools.delete')" :cancel-label="t('common.close')" tone="danger" @confirm="deleteDatabase" />
+    <Teleport to="body">
+      <div v-if="showCreateTable" class="fixed inset-0 z-[60] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm" @mousedown.self="closeCreateTable">
+        <form class="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl" @submit.prevent="createTable">
+          <div class="scrollbar overflow-auto p-6"><h2 class="text-base font-semibold tracking-tight">{{ t('database.createTableTitle') }}</h2><p class="mt-2 text-sm leading-6 text-muted">{{ t('database.createTableDescription') }}</p><label class="mt-5 grid max-w-sm gap-1.5 text-sm font-medium">{{ t('table.name') }}<input v-model.trim="newTable.name" class="rounded-md border border-line bg-canvas px-3 py-2 text-ink outline-none focus:border-accent" required autofocus :disabled="creatingTable" :placeholder="t('database.createTableNamePlaceholder')"></label><div class="mt-6 flex items-center justify-between gap-3"><h3 class="text-sm font-semibold">{{ t('database.createTableColumns') }}</h3><button type="button" class="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-sm hover:bg-canvas disabled:opacity-50" :disabled="creatingTable" @click="addNewTableColumn()"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" />{{ t('database.createTableAddColumn') }}</button></div><div class="mt-3 overflow-hidden rounded-lg border border-line"><div class="scrollbar overflow-x-auto"><table class="min-w-[620px] w-full text-left text-sm"><thead class="bg-canvas text-xs text-muted"><tr><th class="px-3 py-2 font-medium">{{ t('table.column') }}</th><th class="px-3 py-2 font-medium">{{ t('table.type') }}</th><th class="px-3 py-2 text-center font-medium">{{ t('table.nullable') }}</th><th class="px-3 py-2 text-center font-medium">{{ t('database.createTablePrimary') }}</th><th class="px-3 py-2 text-center font-medium">{{ t('database.createTableAutoIncrement') }}</th><th class="w-10 px-2 py-2"><span class="sr-only">{{ t('grid.actions') }}</span></th></tr></thead><tbody><tr v-for="column in newTable.columns" :key="column.id" class="border-t border-line"><td class="p-2"><input v-model.trim="column.name" class="w-full rounded border border-line bg-canvas px-2 py-1.5 text-ink outline-none focus:border-accent" required :disabled="creatingTable" :placeholder="t('table.structureNamePlaceholder')"></td><td class="p-2"><input v-model.trim="column.type" class="w-full rounded border border-line bg-canvas px-2 py-1.5 font-mono text-ink outline-none focus:border-accent" required :disabled="creatingTable" placeholder="varchar(255)"></td><td class="p-2 text-center"><input v-model="column.nullable" type="checkbox" :disabled="creatingTable"></td><td class="p-2 text-center"><input v-model="column.primary" type="checkbox" :disabled="creatingTable"></td><td class="p-2 text-center"><input v-model="column.autoIncrement" type="checkbox" :disabled="creatingTable"></td><td class="p-2 text-center"><button type="button" class="grid rounded p-1 text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="creatingTable || newTable.columns.length === 1" :title="t('database.createTableRemoveColumn')" :aria-label="t('database.createTableRemoveColumn')" @click="removeNewTableColumn(column.id)"><Icon name="lucide:trash-2" class="h-4 w-4" aria-hidden="true" /></button></td></tr></tbody></table></div></div></div>
+          <div class="flex flex-col-reverse gap-2 border-t border-line bg-canvas/40 px-5 py-4 sm:flex-row sm:justify-end"><button type="button" class="rounded-lg px-3.5 py-2 text-sm font-medium text-muted hover:bg-panel hover:text-ink" :disabled="creatingTable" @click="closeCreateTable">{{ t('common.close') }}</button><button type="submit" class="rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-50" :disabled="creatingTable">{{ creatingTable ? t('database.createTableCreating') : t('database.createTable') }}</button></div>
+        </form>
+      </div>
+    </Teleport>
   </section>
 </template>
 

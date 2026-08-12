@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <div v-if="hasResults" class="h-1.5 shrink-0 cursor-row-resize bg-line hover:bg-accent" @pointerdown="resizeResults" />
-    <section v-if="hasResults" class="flex min-h-0 shrink-0 flex-col overflow-hidden border-t border-line bg-panel" :style="{ height: `${resultHeight}%` }">
+    <section v-if="hasResults" class="flex min-h-0 shrink-0 flex-col overflow-hidden border-t border-line" :style="{ height: `${resultHeight}%` }">
       <QueryResults :result-tabs="resultTabs" :active-result-tab-id="activeResultTabId" :loading="loading" :loading-more="loadingMore" :summary="resultSummary" @select-tab="emit('selectResultTab', $event)" @close-tab="emit('closeResultTab', $event)" @copy="emit('copyResult', $event)" @save="(id, result, mutations) => emit('saveResult', id, result, mutations)" @load-more="emit('loadMore')" @sort="(id, column, direction) => emit('sortResult', id, column, direction)" @refresh="emit('refreshResult', $event)" />
     </section>
   </section>

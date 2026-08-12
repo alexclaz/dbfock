@@ -774,7 +774,9 @@ func (a *API) query(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.HistorySQL) != "" {
 		historySQL = req.HistorySQL
 	}
-	operation := operationType(historySQL)
+	// Security decisions must come from the SQL that will run, not its optional
+	// human-readable history label.
+	operation := operationType(req.SQL)
 	if c.Environment == "production" && (operation == "COMMIT" || operation == "ROLLBACK") {
 		fail(w, fmt.Errorf("use the transaction controls to commit or rollback production changes"))
 		return
@@ -788,12 +790,12 @@ func (a *API) query(w http.ResponseWriter, r *http.Request) {
 		statement = "SET FOREIGN_KEY_CHECKS=0;\n" + statement
 	}
 	var result *models.QueryResult
-	if transactional, ok := p.(database.TransactionalProvider); ok && c.Environment == "production" && (isDataMutation(operation) || transactional.TransactionStatus(c).Pending) {
-		if transactional.TransactionStatus(c).Pending && !isDataMutation(operation) && !isReadOnly(operation) {
+	if transactional, ok := p.(database.TransactionalProvider); ok && c.Environment == "production" && (isProductionMutation(operation) || transactional.TransactionStatus(c).Pending) {
+		if transactional.TransactionStatus(c).Pending && !isProductionMutation(operation) && !isReadOnly(operation) {
 			fail(w, fmt.Errorf("commit or rollback pending production changes before running %s", operation))
 			return
 		}
-		result, err = transactional.QueryInTransaction(ctx, c, statement, a.config.MaxQueryRows, isDataMutation(operation))
+		result, err = transactional.QueryInTransaction(ctx, c, statement, a.config.MaxQueryRows, isProductionMutation(operation))
 	} else {
 		result, err = p.Query(ctx, c, statement, a.config.MaxQueryRows)
 	}
@@ -2377,8 +2379,11 @@ func operationType(s string) string {
 	}
 	return f[0]
 }
-func isDataMutation(operation string) bool {
-	return operation == "INSERT" || operation == "UPDATE" || operation == "DELETE"
+func isProductionMutation(operation string) bool {
+	// Keep the small, explicitly read-only set outside the production queue.
+	// Everything else can create, edit, remove, or administrate server state,
+	// so it must be reviewed through the Commit controls first.
+	return !isReadOnly(operation) && operation != "USE" && operation != "SET" && operation != "DO"
 }
 func isReadOnly(operation string) bool {
 	return operation == "SELECT" || operation == "SHOW" || operation == "DESCRIBE" || operation == "EXPLAIN"

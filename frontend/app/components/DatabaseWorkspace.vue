@@ -187,7 +187,12 @@ async function deleteDatabase() {
   showDeleteConfirmation.value = false
   deletingDatabase.value = true
   try {
-    await api(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `DROP DATABASE ${databaseNameSQL()}`, historySql: `Drop database ${props.database}` } })
+    const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `DROP DATABASE ${databaseNameSQL()}`, historySql: `Drop database ${props.database}` } })
+    if (response.transactionPending) {
+      emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
+      notifySuccess(t('transaction.queued'))
+      return
+    }
     notifySuccess(t('database.tools.deleteSuccess', { database: props.database }))
     emit('databaseDeleted', props.connectionId, props.database)
   } catch (cause: unknown) { notifyError(messageFor(cause)) }
@@ -230,6 +235,10 @@ async function createTable() {
     const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: newTableSQL(), historySql: `Create table ${props.database}.${name}` } })
     if (response.transactionPending) emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
     showCreateTable.value = false
+    if (response.transactionPending) {
+      notifySuccess(t('transaction.queued'))
+      return
+    }
     diagram.value = undefined
     await load()
     notifySuccess(t('database.createTableSuccess', { table: name }))

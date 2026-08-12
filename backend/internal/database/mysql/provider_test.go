@@ -54,6 +54,29 @@ func TestNewQueryResultSerializesEmptyCollections(t *testing.T) {
 	}
 }
 
+func TestProductionMutationIsOnlyQueuedUntilCommit(t *testing.T) {
+	p := New(1)
+	connection := models.Connection{ID: "production"}
+
+	result, err := p.QueryInTransaction(context.Background(), connection, "ALTER TABLE users ADD COLUMN active TINYINT", 100, true)
+	if err != nil {
+		t.Fatalf("QueryInTransaction() error = %v", err)
+	}
+	if !result.TransactionPending || result.PendingStatements != 1 {
+		t.Fatalf("result = %#v, want one pending statement", result)
+	}
+	status := p.TransactionStatus(connection)
+	if !status.Pending || len(status.Statements) != 1 || status.Statements[0].SQL != "ALTER TABLE users ADD COLUMN active TINYINT" {
+		t.Fatalf("status = %#v, want queued ALTER TABLE", status)
+	}
+	if _, err := p.RollbackTransaction(context.Background(), connection, nil); err != nil {
+		t.Fatalf("RollbackTransaction() error = %v", err)
+	}
+	if status = p.TransactionStatus(connection); status.Pending {
+		t.Fatalf("status after rollback = %#v, want no pending statements", status)
+	}
+}
+
 func TestUpdateRowStatementUsesParametersAndNullSafeOriginalValues(t *testing.T) {
 	statement, args, err := updateRowStatement("app", "users", map[string]any{"id": 7, "nickname": nil}, map[string]any{"name": "Ana"})
 	if err != nil {

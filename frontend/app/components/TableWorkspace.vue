@@ -8,7 +8,7 @@ type TableToolsSection = 'import' | 'export' | 'migration' | 'maintenance' | 'da
 type ColumnEditorMode = 'add' | 'edit'
 
 const props = defineProps<{ connectionId: string; database: string; table: string; activeSection?: TableSection }>()
-const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-database': [database: string]; 'open-table': [table: string]; databaseDeleted: [connectionId: string, database: string] }>()
+const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-database': [database: string]; 'open-table': [table: string]; tableDeleted: [connectionId: string, database: string, table: string]; databaseDeleted: [connectionId: string, database: string] }>()
 const api = useApi()
 const { saveTextFile } = useFileSave()
 const workspace = useWorkspaceStore()
@@ -52,6 +52,8 @@ const showTruncateConfirmation = ref(false)
 const showMigrationTruncateConfirmation = ref(false)
 const showDeleteDatabaseConfirmation = ref(false)
 const deletingDatabase = ref(false)
+const showDropTableConfirmation = ref(false)
+const droppingTable = ref(false)
 const toolsSection = ref<TableToolsSection>('import')
 const showColumnEditor = ref(false)
 const columnEditorMode = ref<ColumnEditorMode>('add')
@@ -234,6 +236,10 @@ async function saveColumn() {
     if (response.transactionPending) emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
     showColumnEditor.value = false
     dataEditing.value = false
+    if (response.transactionPending) {
+      notifySuccess(t('transaction.queued'))
+      return
+    }
     await Promise.all([loadStructure(), loadData()])
     notifySuccess(t(columnEditorMode.value === 'add' ? 'table.structureAddSuccess' : 'table.structureEditSuccess', { column: columnForm.name }))
   } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
@@ -253,6 +259,10 @@ async function dropColumn() {
     const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `ALTER TABLE ${tableNameSQL()} DROP COLUMN ${columnNameSQL(column.name)}`, historySql: `Drop column ${column.name} from ${props.database}.${props.table}` } })
     if (response.transactionPending) emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
     dataEditing.value = false
+    if (response.transactionPending) {
+      notifySuccess(t('transaction.queued'))
+      return
+    }
     await Promise.all([loadStructure(), loadData()])
     notifySuccess(t('table.structureDropSuccess', { column: column.name }))
   } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
@@ -308,11 +318,32 @@ async function migrateTable(confirmedTruncate = false) {
   finally { migrating.value = false }
 }
 async function confirmMigrationTruncate() { showMigrationTruncateConfirmation.value = false; await migrateTable(true) }
+async function dropTable() {
+  showDropTableConfirmation.value = false
+  droppingTable.value = true
+  try {
+    const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `DROP TABLE ${tableNameSQL()}`, historySql: `Drop table ${props.database}.${props.table}` } })
+    if (response.transactionPending) {
+      emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
+      notifySuccess(t('transaction.queued'))
+      return
+    }
+    notifySuccess(t('table.tools.dropTableSuccess', { table: props.table }))
+    emit('open-database', props.database)
+    emit('tableDeleted', props.connectionId, props.database, props.table)
+  } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
+  finally { droppingTable.value = false }
+}
 async function deleteDatabase() {
   showDeleteDatabaseConfirmation.value = false
   deletingDatabase.value = true
   try {
-    await api(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `DROP DATABASE ${databaseNameSQL()}`, historySql: `Drop database ${props.database}` } })
+    const response = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: `DROP DATABASE ${databaseNameSQL()}`, historySql: `Drop database ${props.database}` } })
+    if (response.transactionPending) {
+      emit('transactionStatus', props.connectionId, response.transactionPending, response.pendingStatements)
+      notifySuccess(t('transaction.queued'))
+      return
+    }
     notifySuccess(t('table.tools.deleteDatabaseSuccess', { database: props.database }))
     emit('databaseDeleted', props.connectionId, props.database)
   } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
@@ -487,14 +518,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'export' ? 'tools-nav-active' : ''" @click="toolsSection = 'export'"><Icon name="lucide:download" class="h-4 w-4" aria-hidden="true" />{{ t('table.tools.exportTitle') }}</button>
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'migration' ? 'tools-nav-active' : ''" @click="toolsSection = 'migration'"><Icon name="lucide:arrow-right-left" class="h-4 w-4" aria-hidden="true" />{{ t('table.tools.migrationTitle') }}</button>
           <button type="button" class="tools-nav flex items-center gap-2" :class="toolsSection === 'maintenance' ? 'tools-nav-active' : ''" @click="toolsSection = 'maintenance'"><Icon name="lucide:wrench" class="h-4 w-4" aria-hidden="true" />{{ t('table.tools.maintenanceTitle') }}</button>
-          <button type="button" class="tools-nav tools-nav-danger flex items-center gap-2" :class="toolsSection === 'danger' ? 'tools-nav-danger-active' : ''" @click="toolsSection = 'danger'"><Icon name="lucide:trash-2" class="h-4 w-4" aria-hidden="true" />{{ t('table.tools.deleteDatabaseTitle') }}</button>
+          <button type="button" class="tools-nav tools-nav-danger flex items-center gap-2" :class="toolsSection === 'danger' ? 'tools-nav-danger-active' : ''" @click="toolsSection = 'danger'"><Icon name="lucide:trash-2" class="h-4 w-4" aria-hidden="true" />{{ t('table.tools.dangerTitle') }}</button>
         </nav>
         <div class="min-w-0 flex-1 pb-8">
           <section v-if="toolsSection === 'import'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('table.tools.importTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.importDescription') }}</p><input ref="importInput" class="sr-only" type="file" accept=".csv,text/csv,.json,application/json" @change="selectImportFile" ><div class="mt-5"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="transferring" @click="chooseImport">{{ t('table.tools.chooseImportFile') }}</button><p v-if="selectedImportFile" class="mt-2 text-sm text-muted">{{ t('table.tools.selectedImportFile', { name: selectedImportFile.name }) }}</p></div><div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="importOptions.truncateBefore" class="mt-0.5" type="checkbox" :disabled="transferring" ><span><span class="font-medium">{{ t('table.tools.truncateBeforeImport') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.truncateBeforeImportDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="importOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="transferring" ><span><span class="font-medium">{{ t('table.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.ignoreDuplicatesDescription') }}</span></span></label></div><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="transferring || !selectedImportFile" @click="importTable">{{ transferring ? t('table.tools.importing') : t('table.import') }}</button></section>
           <section v-else-if="toolsSection === 'export'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('table.tools.exportTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.exportDescription') }}</p><div class="mt-6 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="transferring" @click="exportTable('csv')">{{ t('table.exportCsv') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="transferring" @click="exportTable('json')">{{ t('table.exportJson') }}</button></div></section>
           <section v-else-if="toolsSection === 'migration'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('table.tools.migrationTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.migrationDescription', { table: `${database}.${table}` }) }}</p><div class="mt-6 grid gap-3 md:grid-cols-3"><label class="grid gap-1.5 text-sm font-medium">{{ t('table.tools.sourceConnection') }}<AppSelect v-model="source.connectionId" :options="sourceConnectionOptions" :disabled="migrating" :placeholder="t('table.tools.chooseConnection')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.tools.sourceDatabase') }}<AppSelect v-model="source.database" :options="sourceDatabaseOptions" :disabled="migrating || sourceLoading || !source.connectionId" :placeholder="t('table.tools.chooseDatabase')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('table.tools.sourceTable') }}<AppSelect v-model="source.table" :options="sourceTableOptions" :disabled="migrating || sourceLoading || !source.database" :placeholder="t('table.tools.chooseTable')" /></label></div><div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.truncateBefore" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('table.tools.truncateBefore') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.truncateBeforeDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('table.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('table.tools.ignoreDuplicatesDescription') }}</span></span></label></div><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="migrating || sourceLoading || !source.table" @click="() => migrateTable()">{{ migrating ? t('table.tools.migrating') : t('table.tools.migrate') }}</button></section>
           <section v-else-if="toolsSection === 'maintenance'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('table.tools.maintenanceTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.maintenanceDescription') }}</p><div class="mt-6 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('check')">{{ maintenanceRunning === 'check' ? t('table.tools.running') : t('table.tools.check') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('analyze')">{{ maintenanceRunning === 'analyze' ? t('table.tools.running') : t('table.tools.analyze') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('repair')">{{ maintenanceRunning === 'repair' ? t('table.tools.running') : t('table.tools.repair') }}</button><button type="button" class="rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="showTruncateConfirmation = true">{{ t('table.tools.truncate') }}</button></div><div v-if="maintenanceResult?.columns.length" class="scrollbar mt-5 overflow-auto rounded-md border border-line"><table class="min-w-full text-left text-xs"><thead class="bg-canvas text-muted"><tr><th v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2 font-medium">{{ column.name }}</th></tr></thead><tbody><tr v-for="(row, index) in maintenanceResult.rows" :key="index" class="border-t border-line"><td v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2">{{ row[column.name] }}</td></tr></tbody></table></div></section>
-          <section v-else class="max-w-xl"><h3 class="text-base font-semibold text-rose-600">{{ t('table.tools.deleteDatabaseTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.deleteDatabaseDescription', { database }) }}</p><button type="button" class="mt-5 rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="deletingDatabase" @click="showDeleteDatabaseConfirmation = true">{{ deletingDatabase ? t('table.tools.deletingDatabase') : t('table.tools.deleteDatabase') }}</button></section>
+          <section v-else class="max-w-xl space-y-8"><div><h3 class="text-base font-semibold text-rose-600">{{ t('table.tools.dropTableTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.dropTableDescription', { table: `${database}.${table}` }) }}</p><button type="button" class="mt-5 rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="droppingTable" @click="showDropTableConfirmation = true">{{ droppingTable ? t('table.tools.droppingTable') : t('table.tools.dropTable') }}</button></div><div class="border-t border-line pt-8"><h3 class="text-base font-semibold text-rose-600">{{ t('table.tools.deleteDatabaseTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('table.tools.deleteDatabaseDescription', { database }) }}</p><button type="button" class="mt-5 rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="deletingDatabase" @click="showDeleteDatabaseConfirmation = true">{{ deletingDatabase ? t('table.tools.deletingDatabase') : t('table.tools.deleteDatabase') }}</button></div></section>
         </div>
       </div>
     </div>
@@ -511,6 +542,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
     <AppConfirmDialog v-model="showTruncateConfirmation" :title="t('table.tools.truncateTitle')" :description="t('table.tools.truncateDescription', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmTruncate" />
     <AppConfirmDialog v-model="showMigrationTruncateConfirmation" :title="t('table.tools.truncateBeforeTitle')" :description="t('table.tools.truncateBeforeConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncateAndMigrate')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmMigrationTruncate" />
     <AppConfirmDialog v-model="showImportTruncateConfirmation" :title="t('table.tools.truncateBeforeImportTitle')" :description="t('table.tools.truncateBeforeImportConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.truncateAndImport')" :cancel-label="t('common.close')" tone="danger" @confirm="confirmImportTruncate" />
+    <AppConfirmDialog v-model="showDropTableConfirmation" :title="t('table.tools.dropTableConfirmTitle')" :description="t('table.tools.dropTableConfirm', { table: `${database}.${table}` })" :confirm-label="t('table.tools.dropTable')" :cancel-label="t('common.close')" tone="danger" @confirm="dropTable" />
     <AppConfirmDialog v-model="showDeleteDatabaseConfirmation" :title="t('table.tools.deleteDatabaseConfirmTitle')" :description="t('table.tools.deleteDatabaseConfirm', { database })" :confirm-label="t('table.tools.deleteDatabase')" :cancel-label="t('common.close')" tone="danger" @confirm="deleteDatabase" />
     <AppConfirmDialog v-model="showDropColumnConfirmation" :title="t('table.structureDropTitle')" :description="t('table.structureDropDescription', { column: columnPendingDelete?.name || '', table: `${database}.${table}` })" :confirm-label="t('table.structureDrop')" :cancel-label="t('common.close')" tone="danger" @confirm="dropColumn" />
   </section>

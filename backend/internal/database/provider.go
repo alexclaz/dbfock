@@ -35,8 +35,8 @@ type Provider interface {
 	Query(context.Context, models.Connection, string, int) (*models.QueryResult, error)
 }
 
-// TransactionalProvider is implemented by drivers that can keep a manual
-// transaction open between query requests.
+// TransactionalProvider is implemented by drivers that can stage production
+// mutations and execute only the approved statements on commit.
 type TransactionalProvider interface {
 	QueryInTransaction(context.Context, models.Connection, string, int, bool) (*models.QueryResult, error)
 	CommitTransaction(context.Context, models.Connection, []string) (models.TransactionStatus, error)

@@ -17,8 +17,6 @@ import (
 )
 
 type transactionSession struct {
-	db         *sql.DB
-	tx         *sql.Tx
 	mu         sync.Mutex
 	statements []pendingStatement
 	nextID     int
@@ -772,36 +770,33 @@ func (p *Provider) DeleteRowInTransaction(ctx context.Context, c models.Connecti
 }
 
 func (p *Provider) runMutationInTransaction(ctx context.Context, c models.Connection, statement string, args []any) (*models.QueryResult, error) {
+	return p.stageMutation(ctx, c, statement, args, 1)
+}
+
+// stageMutation deliberately does not execute SQL. MySQL implicitly commits
+// several DDL statements (such as CREATE, ALTER, and DROP), so keeping a live
+// transaction cannot protect a production connection from schema changes.
+// Production changes are instead queued and only sent to MySQL on Commit.
+func (p *Provider) stageMutation(ctx context.Context, c models.Connection, statement string, args []any, affectedRows int64) (*models.QueryResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.transactionMu.Lock()
 	session := p.transactions[c.ID]
 	if session == nil {
-		db, openErr := p.open(c)
-		if openErr != nil {
-			p.transactionMu.Unlock()
-			return nil, openErr
-		}
-		tx, beginErr := beginTransaction(ctx, db)
-		if beginErr != nil {
-			db.Close()
-			p.transactionMu.Unlock()
-			return nil, beginErr
-		}
-		session = &transactionSession{db: db, tx: tx}
+		session = &transactionSession{}
 		p.transactions[c.ID] = session
 	}
 	session.mu.Lock()
 	p.transactionMu.Unlock()
 	defer session.mu.Unlock()
 
-	result, err := p.runWithQueryer(ctx, statement, 0, args, session.tx)
-	if err == nil && result.AffectedRows > 0 {
-		session.addStatement(statement, args)
-	}
-	if result != nil {
-		result.TransactionPending = len(session.statements) > 0
-		result.PendingStatements = len(session.statements)
-	}
-	return result, err
+	session.addStatement(statement, args)
+	result := newQueryResult()
+	result.AffectedRows = affectedRows
+	result.TransactionPending = true
+	result.PendingStatements = len(session.statements)
+	return result, nil
 }
 
 func updateRowStatement(dbName, table string, original, changes map[string]any) (string, []any, error) {
@@ -919,39 +914,13 @@ func sortedKeys(values map[string]any) []string {
 	return keys
 }
 
-// QueryInTransaction executes a statement on the connection's pending manual
-// transaction. The transaction is intentionally kept open until commit or rollback.
+// QueryInTransaction queues production mutations without executing them. Read-only
+// statements still run immediately so a pending change can be reviewed safely.
 func (p *Provider) QueryInTransaction(ctx context.Context, c models.Connection, statement string, maxRows int, mutating bool) (*models.QueryResult, error) {
-	p.transactionMu.Lock()
-	session := p.transactions[c.ID]
-	if session == nil {
-		db, err := p.open(c)
-		if err != nil {
-			p.transactionMu.Unlock()
-			return nil, err
-		}
-		tx, err := beginTransaction(ctx, db)
-		if err != nil {
-			db.Close()
-			p.transactionMu.Unlock()
-			return nil, err
-		}
-		session = &transactionSession{db: db, tx: tx}
-		p.transactions[c.ID] = session
+	if mutating {
+		return p.stageMutation(ctx, c, statement, nil, 0)
 	}
-	session.mu.Lock()
-	p.transactionMu.Unlock()
-	defer session.mu.Unlock()
-
-	result, err := p.runWithQueryer(ctx, statement, maxRows, nil, session.tx)
-	if err == nil && mutating {
-		session.addStatement(statement, nil)
-	}
-	if result != nil {
-		result.TransactionPending = len(session.statements) > 0
-		result.PendingStatements = len(session.statements)
-	}
-	return result, err
+	return p.Query(ctx, c, statement, maxRows)
 }
 
 func (p *Provider) TransactionStatus(c models.Connection) models.TransactionStatus {
@@ -974,11 +943,9 @@ func (p *Provider) RollbackTransaction(ctx context.Context, c models.Connection,
 	return p.finishTransaction(ctx, c, statementIDs, false)
 }
 
-// finishTransaction supports both the original all-or-nothing controls and a
-// chosen subset. A database transaction cannot commit or roll back an arbitrary
-// statement independently, so for a subset we discard the current transaction,
-// commit the chosen statements in order, and recreate the remaining pending
-// transaction from the recorded statements.
+// finishTransaction executes only the selected queued statements. Until this
+// point no statement has been sent to MySQL, including DDL that cannot be
+// safely enclosed in a MySQL transaction.
 func (p *Provider) finishTransaction(ctx context.Context, c models.Connection, statementIDs []string, commit bool) (models.TransactionStatus, error) {
 	p.transactionMu.Lock()
 	session := p.transactions[c.ID]
@@ -994,41 +961,19 @@ func (p *Provider) finishTransaction(ctx context.Context, c models.Connection, s
 	if err != nil {
 		return session.status(), err
 	}
-	if len(remaining) == 0 {
-		var finishErr error
-		if commit {
-			finishErr = session.tx.Commit()
-		} else {
-			finishErr = session.tx.Rollback()
-		}
-		delete(p.transactions, c.ID)
-		closeErr := session.db.Close()
-		if finishErr != nil && finishErr != sql.ErrTxDone {
-			return models.TransactionStatus{}, finishErr
-		}
-		return models.TransactionStatus{}, closeErr
-	}
-
-	if err := session.tx.Rollback(); err != nil && err != sql.ErrTxDone {
-		return session.status(), err
-	}
-	if err := session.db.Close(); err != nil {
-		return session.status(), err
-	}
-	delete(p.transactions, c.ID)
-
-	if commit {
+	if commit && len(chosen) > 0 {
 		if err := p.executeStatements(ctx, c, chosen, true); err != nil {
-			return p.restorePending(ctx, c, session.statements, session.nextID, err)
+			// Keep the queue visible when MySQL rejects a statement, so the user
+			// can revise or discard it instead of losing the pending work.
+			return session.status(), err
 		}
 	}
-	if err := p.createPendingSession(ctx, c, remaining, session.nextID); err != nil {
-		if !commit {
-			return p.restorePending(ctx, c, session.statements, session.nextID, err)
-		}
-		return models.TransactionStatus{}, fmt.Errorf("selected changes were committed, but the remaining pending changes could not be restored: %w", err)
+	if len(remaining) == 0 {
+		delete(p.transactions, c.ID)
+		return models.TransactionStatus{}, nil
 	}
-	return p.transactions[c.ID].status(), nil
+	session.statements = remaining
+	return session.status(), nil
 }
 
 func (s *transactionSession) addStatement(statement string, args []any) {
@@ -1091,34 +1036,6 @@ func (p *Provider) executeStatements(ctx context.Context, c models.Connection, s
 		return tx.Commit()
 	}
 	return tx.Rollback()
-}
-
-func (p *Provider) createPendingSession(ctx context.Context, c models.Connection, statements []pendingStatement, nextID int) error {
-	db, err := p.open(c)
-	if err != nil {
-		return err
-	}
-	tx, err := beginTransaction(ctx, db)
-	if err != nil {
-		db.Close()
-		return err
-	}
-	for _, statement := range statements {
-		if _, err := p.runWithQueryer(ctx, statement.SQL, 0, statement.args, tx); err != nil {
-			_ = tx.Rollback()
-			db.Close()
-			return err
-		}
-	}
-	p.transactions[c.ID] = &transactionSession{db: db, tx: tx, statements: statements, nextID: nextID}
-	return nil
-}
-
-func (p *Provider) restorePending(ctx context.Context, c models.Connection, statements []pendingStatement, nextID int, originalErr error) (models.TransactionStatus, error) {
-	if err := p.createPendingSession(ctx, c, statements, nextID); err != nil {
-		return models.TransactionStatus{}, fmt.Errorf("%w; could not restore pending changes: %v", originalErr, err)
-	}
-	return p.transactions[c.ID].status(), originalErr
 }
 
 type queryer interface {

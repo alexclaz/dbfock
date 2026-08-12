@@ -30,6 +30,19 @@ func TestGetAppVersion(t *testing.T) {
 	}
 }
 
+func TestProductionMutationClassificationProtectsSchemaAndDataChanges(t *testing.T) {
+	for _, operation := range []string{"CREATE", "ALTER", "DROP", "TRUNCATE", "INSERT", "UPDATE", "DELETE", "GRANT"} {
+		if !isProductionMutation(operation) {
+			t.Errorf("isProductionMutation(%q) = false, want true", operation)
+		}
+	}
+	for _, operation := range []string{"SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "USE", "SET", "DO"} {
+		if isProductionMutation(operation) {
+			t.Errorf("isProductionMutation(%q) = true, want false", operation)
+		}
+	}
+}
+
 func TestConnectionExportRequestOmitsPassword(t *testing.T) {
 	connection := models.Connection{
 		Name:              "Production",

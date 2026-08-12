@@ -16,7 +16,26 @@ function csvCell(value: unknown) {
 }
 
 export function queryResultAsJSON(result?: QueryResult) {
-  return JSON.stringify(result?.rows ?? [], (_, value) => typeof value === 'bigint' ? value.toString() : value, 2) ?? '[]'
+  if (!result) return '[]'
+
+  // Rows arrive from the API as objects, whose keys may have been reordered
+  // during serialization. Rebuild each row from the result metadata so the
+  // JSON view and export follow the schema/query column order.
+  const columnNames = new Set(result.columns.map((column) => column.name))
+  const rows = result.rows.map((row) => {
+    const ordered: Record<string, unknown> = {}
+    for (const column of result.columns) {
+      if (Object.prototype.hasOwnProperty.call(row, column.name)) ordered[column.name] = row[column.name]
+    }
+    // Preserve values that are not represented in the metadata, without
+    // changing the schema-defined order of known columns.
+    for (const [name, value] of Object.entries(row)) {
+      if (!columnNames.has(name)) ordered[name] = value
+    }
+    return ordered
+  })
+
+  return JSON.stringify(rows, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2)
 }
 
 export function queryResultAsCSV(result?: QueryResult) {

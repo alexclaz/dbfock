@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Connection, QueryResult, SmartQuery } from '~/types/database'
 
-type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; dirty?: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[] }
+type SmartResultTab = { id: string; title: string; result?: QueryResult; view: 'table' | 'json' | 'csv'; copied: boolean; editing: boolean; dirty?: boolean; sources?: { connectionId: string; database: string; table: string; columns: string[]; primaryKey: string[] }[]; insertTarget?: { database: string; table: string; columns: string[] } }
 type GridMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 
 const props = defineProps<{ queries: SmartQuery[]; connections: Connection[]; resultTabs: SmartResultTab[]; activeResultTabId?: string; loading?: boolean; loadingMore?: boolean }>()

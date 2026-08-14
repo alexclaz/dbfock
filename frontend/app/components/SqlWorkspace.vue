@@ -10,6 +10,7 @@ type ResultTab = {
   editing: boolean
   dirty?: boolean
   sources?: { columns: string[]; primaryKey?: string[] }[]
+  insertTarget?: { database: string; table: string; columns: string[] }
 }
 type GridMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 

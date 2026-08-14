@@ -65,7 +65,8 @@
   --syntax-key: 86 156 214; --syntax-string: 206 145 120; --syntax-number: 181 206 168; --syntax-boolean: 86 156 214; --syntax-null: 86 156 214; --syntax-comment: 106 153 85; --syntax-operator: 212 212 212;
 }
 html, body, #__nuxt { min-height: 100%; }
-body { @apply bg-canvas text-ink antialiased; font-family: var(--app-font); user-select: none; -webkit-user-select: none; }
+body { @apply bg-canvas text-ink antialiased; font-family: var(--app-font); }
+.wails body { user-select: none; -webkit-user-select: none; }
 /* Native-app feel: chrome is not selectable, text selection is opt-in for real content. */
 input, textarea, select, pre, code, [contenteditable='true'], .cm-editor, .select-text, .select-text * { user-select: text; -webkit-user-select: text; }
 button, input, textarea, select { font: inherit; }

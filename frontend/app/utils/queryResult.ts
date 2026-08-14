@@ -1,4 +1,5 @@
 import type { QueryResult } from '~/types/database'
+import { tableInsertStatements } from '~/utils/tableTransfer'
 
 export type QueryRowUpdate = { original: Record<string, unknown>; changes: Record<string, unknown> }
 export type QueryResultEditOptions = { editableColumns?: string[]; keyColumns?: string[] }
@@ -52,6 +53,18 @@ export function queryResultAsTSV(result?: QueryResult) {
   const headers = columns.map((column) => valueForExport(column.name)).join('\t')
   const rows = (result.rows ?? []).map((row) => columns.map((column) => valueForExport(row[column.name]).replaceAll('\t', ' ').replaceAll('\r', ' ').replaceAll('\n', ' ')).join('\t'))
   return [headers, ...rows].join('\n')
+}
+
+export type InsertTarget = { database: string; table: string; columns: string[] }
+
+/** Build MySQL INSERT statements for rows selected in a query result. */
+export function queryRowsAsInsert(result: QueryResult | undefined, target: InsertTarget, rows: Record<string, unknown>[]) {
+  if (!result || !rows.length) return ''
+  const resultColumns = new Map(result.columns.map((column) => [column.name, column]))
+  const columns = target.columns.filter((column) => resultColumns.has(column))
+  if (!columns.length) return ''
+  const columnTypes = Object.fromEntries(columns.map((column) => [column, resultColumns.get(column)?.databaseType ?? '']))
+  return tableInsertStatements(target.database, target.table, columns, rows.map((row) => columns.map((column) => row[column])), 80_000, columnTypes).map((statement) => `${statement};`).join('\n')
 }
 
 function sameValue(left: unknown, right: unknown) {

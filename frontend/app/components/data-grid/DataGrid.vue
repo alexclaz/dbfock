@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { QueryColumn, QueryResult } from '~/types/database'
-import { queryResultAsCSV, queryResultAsJSON } from '~/utils/queryResult'
+import { queryResultAsCSV, queryResultAsJSON, queryRowsAsInsert, type InsertTarget } from '~/utils/queryResult'
 
-const props = withDefaults(defineProps<{ result?: QueryResult; loading?: boolean; loadingMore?: boolean; view?: 'table' | 'json' | 'csv'; editing?: boolean; editable?: boolean; editableColumns?: string[]; jsonEditable?: boolean; sortable?: boolean; sortColumn?: string; sortDirection?: 'asc' | 'desc'; rowActions?: boolean; primaryKey?: string[] }>(), { view: 'table', editing: false, editable: true, jsonEditable: true, sortable: false, rowActions: false, primaryKey: () => [] })
+const props = withDefaults(defineProps<{ result?: QueryResult; loading?: boolean; loadingMore?: boolean; view?: 'table' | 'json' | 'csv'; editing?: boolean; editable?: boolean; editableColumns?: string[]; jsonEditable?: boolean; sortable?: boolean; sortColumn?: string; sortDirection?: 'asc' | 'desc'; rowActions?: boolean; primaryKey?: string[]; insertTarget?: InsertTarget }>(), { view: 'table', editing: false, editable: true, jsonEditable: true, sortable: false, rowActions: false, primaryKey: () => [] })
 type GridRowMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 
 const emit = defineEmits<{ loadMore: []; save: [result: QueryResult, mutations: GridRowMutations]; cancel: []; startEdit: []; dirty: [value: boolean]; sort: [column: string, direction: 'asc' | 'desc'] }>()
@@ -36,6 +36,7 @@ const isDirty = computed(() => {
 })
 const canSave = computed(() => !jsonError.value && isDirty.value)
 const canSort = computed(() => props.sortable)
+const canSelectRows = computed(() => props.rowActions || Boolean(props.insertTarget))
 
 function display(value: unknown) { if (value === null) return 'NULL'; if (typeof value === 'boolean') return value ? 'true' : 'false'; return String(value) }
 function cloneResult(result?: QueryResult) { return result ? { ...result, columns: result.columns.map((column) => ({ ...column })), rows: result.rows.map((row) => ({ ...row })) } : undefined }
@@ -176,8 +177,15 @@ function isDeleted(row: Record<string, unknown>) { return deletedRows.value.incl
 function isInserted(row: Record<string, unknown>) { return insertedRows.value.some((entry) => entry.row === row) }
 function isSelected(row: Record<string, unknown>) { return selectedRows.value.includes(row) }
 function selectedRowsForMenu() { return selectedRows.value.filter((row) => rows.value.includes(row)) }
+async function copyRowsAsInsert() {
+  if (!props.insertTarget || !navigator.clipboard) return
+  const contents = queryRowsAsInsert(displayResult.value, props.insertTarget, selectedRowsForMenu().filter((row) => !isDeleted(row)))
+  if (!contents) return
+  try { await navigator.clipboard.writeText(contents) }
+  catch { /* Clipboard access can be denied by the browser. */ }
+}
 function selectRow(event: MouseEvent, rowIndex: number) {
-  if (!props.rowActions) return
+  if (!canSelectRows.value) return
   const row = rows.value[rowIndex]
   if (!row) return
   const anchorIndex = selectionAnchor.value ? rows.value.indexOf(selectionAnchor.value) : -1
@@ -243,7 +251,7 @@ function undoInsertedRows() {
   activeCell.value = undefined
 }
 function openRowMenu(event: MouseEvent, row: number) {
-  if (!props.rowActions) return
+  if (!canSelectRows.value) return
   event.preventDefault()
   if (!isSelected(rows.value[row]!)) selectRow(event, row)
   contextMenu.value = { x: event.clientX, y: event.clientY, row }
@@ -282,6 +290,6 @@ defineExpose({ save, cancel, canSave, addRow })
     <div v-else-if="editing && view === 'json'" class="min-h-full bg-canvas p-2"><textarea ref="jsonEditor" class="min-h-[18rem] w-full resize-y rounded-md border border-line bg-panel p-2 font-mono text-xs leading-4 text-ink outline-none focus:border-accent" spellcheck="false" :value="jsonDraft" @input="updateJSON(($event.target as HTMLTextAreaElement).value)" /><p v-if="jsonError" class="mt-2 text-xs text-rose-500">{{ t('grid.invalidJson') }}: {{ jsonError }}</p></div>
     <div v-else-if="view === 'json'" class="min-h-full bg-canvas" @dblclick="editJSON"><pre class="min-h-full cursor-text whitespace-pre-wrap break-words p-2 font-mono text-xs leading-4 text-ink" v-html="highlightedJSON" /></div>
     <pre v-else class="min-h-full whitespace-pre-wrap break-words bg-canvas p-2 font-mono text-xs leading-4 text-ink" v-html="highlightedCSV" />
-    <Teleport to="body"><div v-if="contextMenu" class="fixed z-50 w-44 rounded-md border border-line bg-panel p-1 text-xs text-ink shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop><button v-if="selectedRowsForMenu().some(isInserted)" type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-amber-600 hover:bg-amber-500/10" @click="undoInsertedRows(); contextMenu = undefined"><Icon name="lucide:rotate-ccw" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.undoRows') }}</button><button v-if="selectedRowsForMenu().some(isDeleted)" type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-emerald-600 hover:bg-emerald-500/10" @click="restoreRows(); contextMenu = undefined"><Icon name="lucide:rotate-ccw" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.restoreRows') }}</button><template v-if="selectedRowsForMenu().some((row) => !isDeleted(row) && !isInserted(row))"><button type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-canvas" @click="duplicateRows(); contextMenu = undefined"><Icon name="lucide:copy-plus" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.duplicateRows') }}</button><button type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-rose-500 hover:bg-rose-500/10" @click="deleteRows(); contextMenu = undefined"><Icon name="lucide:trash-2" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.deleteRows') }}</button></template></div></Teleport>
+    <Teleport to="body"><div v-if="contextMenu" class="fixed z-50 w-44 rounded-md border border-line bg-panel p-1 text-xs text-ink shadow-lg" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop><button v-if="insertTarget && selectedRowsForMenu().some((row) => !isDeleted(row))" type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-canvas" @click="copyRowsAsInsert(); contextMenu = undefined"><Icon name="lucide:clipboard-copy" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.copyAsInsert') }}</button><button v-if="rowActions && selectedRowsForMenu().some(isInserted)" type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-amber-600 hover:bg-amber-500/10" @click="undoInsertedRows(); contextMenu = undefined"><Icon name="lucide:rotate-ccw" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.undoRows') }}</button><button v-if="rowActions && selectedRowsForMenu().some(isDeleted)" type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-emerald-600 hover:bg-emerald-500/10" @click="restoreRows(); contextMenu = undefined"><Icon name="lucide:rotate-ccw" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.restoreRows') }}</button><template v-if="rowActions && selectedRowsForMenu().some((row) => !isDeleted(row) && !isInserted(row))"><button type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-canvas" @click="duplicateRows(); contextMenu = undefined"><Icon name="lucide:copy-plus" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.duplicateRows') }}</button><button type="button" class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-rose-500 hover:bg-rose-500/10" @click="deleteRows(); contextMenu = undefined"><Icon name="lucide:trash-2" class="h-3.5 w-3.5" aria-hidden="true" />{{ t('grid.deleteRows') }}</button></template></div></Teleport>
   </div>
 </template>

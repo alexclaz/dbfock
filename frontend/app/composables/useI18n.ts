@@ -219,6 +219,14 @@ Object.assign(messages['en-US'], {
   'table.tools.dropTableSuccess': 'Table {table} deleted.',
 })
 
+Object.assign(messages['pt-BR'], {
+  'grid.copyAsInsert': 'Copiar como INSERT',
+})
+
+Object.assign(messages['en-US'], {
+  'grid.copyAsInsert': 'Copy as INSERT',
+})
+
 const updateMessages: Record<Locale, Record<string, string>> = {
   'pt-BR': {
     'update.availableDescription': 'A versão {version} está disponível.',

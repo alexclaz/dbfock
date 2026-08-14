@@ -15,6 +15,7 @@ type ResultTab = {
   editing: boolean
   dirty?: boolean
   sources?: EditableResultSource[]
+  insertTarget?: { database: string; table: string; columns: string[] }
   sortColumn?: string
   sortDirection?: 'asc' | 'desc'
   refreshable?: boolean
@@ -384,6 +385,7 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
   resultTab.editing = false
   resultTab.dirty = false
   resultTab.sources = undefined
+  resultTab.insertTarget = undefined
   resultTab.sortColumn = undefined
   resultTab.sortDirection = undefined
   resultTab.refreshable = false
@@ -397,9 +399,10 @@ async function execute(tab: WorkspaceTab, sql = tab.sql, newResultTab = false) {
     if (!isCurrentQuery(resultTab.id, generation, requestId)) return
     resultTab.result = pageable ? pageResult(result) : result
     const resultForSources = resultTab.result
-    const sources = await editableSources(sql, connection, resultForSources, database)
+    const availableSources = await resultSources(sql, connection, resultForSources, database)
     if (!isCurrentQuery(resultTab.id, generation, requestId) || resultTab.result !== resultForSources) return
-    resultTab.sources = sources
+    resultTab.sources = availableSources.filter((source) => source.primaryKey.length)
+    resultTab.insertTarget = availableSources.length === 1 ? { database: availableSources[0]!.database, table: availableSources[0]!.table, columns: availableSources[0]!.columns } : undefined
     if (pageable) pagedQueries[resultTab.id] = { connectionId, sql, requestId, database }
     updateTransactionStatus(connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
@@ -510,6 +513,7 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
     resultTab.sortColumn = undefined
     resultTab.sortDirection = undefined
     resultTab.refreshable = false
+    resultTab.insertTarget = undefined
     smartQueryRunning.value = true
     smartQueryError.value = ''
     delete pagedQueries[resultTab.id]
@@ -517,7 +521,9 @@ async function runSmartQuery(query: SmartQuery, values: Record<string, string>, 
     resultTab.refreshable = pageable
     const result = await api<QueryResult>(`/connections/${query.connectionId}/query`, { method: 'POST', body: pageable ? { sql: pagedSQL(sql, 0), historySql: sql, requestId: resultTab.id } : { sql, requestId: resultTab.id } })
     resultTab.result = pageable ? pageResult(result) : result
-    resultTab.sources = await editableSources(sql, connection, resultTab.result)
+    const availableSources = await resultSources(sql, connection, resultTab.result)
+    resultTab.sources = availableSources.filter((source) => source.primaryKey.length)
+    resultTab.insertTarget = availableSources.length === 1 ? { database: availableSources[0]!.database, table: availableSources[0]!.table, columns: availableSources[0]!.columns } : undefined
     if (pageable) pagedQueries[resultTab.id] = { connectionId: query.connectionId, sql, requestId: resultTab.id }
     updateTransactionStatus(query.connectionId, resultTab.result.transactionPending, resultTab.result.pendingStatements)
     await loadHistory()
@@ -540,7 +546,7 @@ function pageResult(result: QueryResult): QueryResult {
   const rows = result.rows.slice(0, queryPageSize)
   return { ...result, rows, rowCount: rows.length, hasMore }
 }
-async function editableSources(sql: string, connection: Connection, result: QueryResult, defaultDatabase?: string): Promise<EditableResultSource[]> {
+async function resultSources(sql: string, connection: Connection, result: QueryResult, defaultDatabase?: string): Promise<EditableResultSource[]> {
   if (!/^\s*select\b/i.test(sql) || /\b(union|intersect|except)\b/i.test(sql)) return []
   const references = [...sql.matchAll(/\b(?:from|join)\s+((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*))?)/gi)]
     .map((match) => match[1]?.split('.').map((part) => part.trim().replace(/^`|`$/g, '')))
@@ -557,9 +563,9 @@ async function editableSources(sql: string, connection: Connection, result: Quer
     for (const source of sources) for (const column of source.structure.columns) owners.set(column.name, (owners.get(column.name) ?? 0) + 1)
     return sources.flatMap(({ database, table, structure }) => {
       const primaryKey = structure.constraints.find((constraint) => constraint.type === 'PRIMARY KEY')?.columns ?? structure.columns.filter((column) => column.key === 'PRI').map((column) => column.name)
-      if (!primaryKey.length || !primaryKey.every((column) => counts.get(column) === 1 && owners.get(column) === 1)) return []
       const columns = structure.columns.map((column) => column.name).filter((column) => counts.get(column) === 1 && owners.get(column) === 1)
-      return columns.length ? [{ connectionId: connection.id, database, table, columns, primaryKey }] : []
+      const visiblePrimaryKey = primaryKey.every((column) => counts.get(column) === 1 && owners.get(column) === 1) ? primaryKey : []
+      return columns.length ? [{ connectionId: connection.id, database, table, columns, primaryKey: visiblePrimaryKey }] : []
     })
   } catch {
     // A result can still be viewed when its source metadata is unavailable.

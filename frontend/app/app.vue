@@ -23,7 +23,7 @@ function confirmLeaving(event: BeforeUnloadEvent) {
   event.returnValue = true
 }
 
-// Select-all is only meaningful inside editable fields; elsewhere it would highlight the whole UI.
+// In the desktop app, select-all is only meaningful inside editable fields; elsewhere it would highlight the whole UI.
 const selectAllAllowed = 'input, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'
 
 function blockSelectAll(event: KeyboardEvent) {
@@ -61,7 +61,8 @@ onMounted(() => {
   else if (saved === 'dark') theme.value = 'vscode-dark'
   else if (saved === 'auto' || saved === 'system') theme.value = 'vscode-dark'
   window.addEventListener('beforeunload', confirmLeaving)
-  window.addEventListener('keydown', blockSelectAll)
+  document.documentElement.classList.toggle('wails', isWails)
+  if (isWails) window.addEventListener('keydown', blockSelectAll)
   applyTheme()
   void checkForUpdate().then((available) => {
     if (!available) return
@@ -71,7 +72,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', confirmLeaving)
-  window.removeEventListener('keydown', blockSelectAll)
+  if (isWails) window.removeEventListener('keydown', blockSelectAll)
+  document.documentElement.classList.remove('wails')
 })
 
 function prepareUpdate() {

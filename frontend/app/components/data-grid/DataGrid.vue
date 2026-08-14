@@ -58,13 +58,26 @@ watch(() => props.editing, (editing) => {
   activeCell.value = undefined
   jsonError.value = ''
   contextMenu.value = undefined
-  selectedRows.value = []
-  selectionAnchor.value = undefined
-  if (!editing) { draft.value = undefined; insertedRows.value = []; deletedRows.value = []; draftOrigins.value = []; return }
+  if (!editing) {
+    selectedRows.value = []
+    selectionAnchor.value = undefined
+    draft.value = undefined
+    insertedRows.value = []
+    deletedRows.value = []
+    draftOrigins.value = []
+    return
+  }
+  const selectedIndexes = selectedRows.value.flatMap((row) => {
+    const index = props.result?.rows.indexOf(row) ?? -1
+    return index < 0 ? [] : [index]
+  })
+  const anchorIndex = selectionAnchor.value ? props.result?.rows.indexOf(selectionAnchor.value) ?? -1 : -1
   draft.value = cloneResult(props.result)
   insertedRows.value = []
   deletedRows.value = []
   draftOrigins.value = props.result?.rows.map((row) => row) ?? []
+  selectedRows.value = selectedIndexes.flatMap((index) => draft.value?.rows[index] ? [draft.value.rows[index]] : [])
+  selectionAnchor.value = anchorIndex >= 0 ? draft.value?.rows[anchorIndex] : selectedRows.value.at(-1)
   jsonDraft.value = queryResultAsJSON(draft.value)
 }, { immediate: true })
 watch(() => props.result, (result) => { if (!props.editing) draft.value = cloneResult(result) })
@@ -211,6 +224,11 @@ async function insertRow(index: number, values: Record<string, unknown> = {}, us
 }
 async function addRow(values: Record<string, unknown> = {}, useDefaults = true) { await insertRow(draft.value?.rows.length ?? rows.value.length, values, useDefaults) }
 async function duplicateRows() {
+  if (!props.editable || props.view !== 'table') return
+  if (!props.editing) {
+    emit('startEdit')
+    await nextTick()
+  }
   const sources = selectedRowsForMenu().filter((row) => !isDeleted(row) && !isInserted(row))
   const duplicates: Record<string, unknown>[] = []
   for (const source of sources) {

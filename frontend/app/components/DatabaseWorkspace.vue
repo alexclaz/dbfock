@@ -17,6 +17,8 @@ const { error: notifyError, success: notifySuccess } = useToast()
 const tables = ref<TableInfo[]>()
 const loading = ref(true)
 const filter = ref('')
+const filterInput = ref<HTMLInputElement>()
+const isActive = ref(false)
 const section = ref<DatabaseSection>(props.activeSection === 'diagram' || props.activeSection === 'tools' ? props.activeSection : 'tables')
 const diagram = ref<SchemaDiagram>()
 const diagramLoading = ref(false)
@@ -249,13 +251,29 @@ async function createTable() {
 function selectSection(next: DatabaseSection) {
   section.value = next
   emit('update:activeSection', next)
+  if (next === 'tables') focusTableFilterInput()
   if (next === 'diagram' && !diagram.value) void loadDiagram()
 }
 
+function focusTableFilterInput() {
+  if (section.value !== 'tables') return
+  nextTick(() => filterInput.value?.focus())
+}
+function focusTableFilter(event: KeyboardEvent) {
+  if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f' || section.value !== 'tables' || !filterInput.value) return
+  event.preventDefault()
+  focusTableFilterInput()
+  filterInput.value.select()
+}
+
+onActivated(() => { isActive.value = true; window.addEventListener('keydown', focusTableFilter); focusTableFilterInput() })
+onDeactivated(() => { isActive.value = false; window.removeEventListener('keydown', focusTableFilter) })
+onBeforeUnmount(() => window.removeEventListener('keydown', focusTableFilter))
 watch(() => [props.connectionId, props.database], () => { load(); diagram.value = undefined; if (section.value === 'diagram') void loadDiagram() }, { immediate: true })
 watch(() => props.activeSection, (next) => {
   if (!next || next === section.value) return
   section.value = next
+  if (next === 'tables') focusTableFilterInput()
   if (next === 'diagram' && !diagram.value) void loadDiagram()
 })
 watch(() => source.connectionId, async (connectionId) => {
@@ -279,11 +297,11 @@ watch(() => source.connectionId, async (connectionId) => {
           <button type="button" class="rounded px-2.5 py-1" :class="section === 'tools' ? 'bg-canvas text-ink' : 'text-muted'" @click="selectSection('tools')">{{ t('database.viewTools') }}</button>
       </div>
     </header>
-    <div v-if="section === 'tables'" class="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-canvas/40 px-5 py-3 lg:px-7">
-      <label class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm sm:max-w-md">
+    <div v-if="section === 'tables'" class="flex flex-wrap items-center justify-end gap-3 border-b border-line bg-canvas/40 px-5 py-3 lg:px-7">
+      <label class="flex min-w-0 w-full items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm sm:w-80">
         <Icon name="lucide:search" class="h-4 w-4 shrink-0" aria-hidden="true" />
         <span class="sr-only">{{ t('stats.filter') }}</span>
-        <input v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('database.filterPlaceholder')" >
+        <input ref="filterInput" v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('database.filterPlaceholder')" >
       </label>
       <button type="button" class="inline-flex shrink-0 items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="creatingTable" @click="openCreateTable"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" />{{ t('database.createTable') }}</button>
     </div>

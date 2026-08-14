@@ -6,6 +6,7 @@ import { parseTableImport, tableInsertStatements, type ImportedTableRows } from 
 type TableSection = 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl' | 'diagram' | 'tools'
 type TableToolsSection = 'import' | 'export' | 'migration' | 'maintenance' | 'danger'
 type ColumnEditorMode = 'add' | 'edit'
+type GridRowMutations = { insertedRows: { index: number; row: Record<string, unknown>; useDefaults: boolean }[]; deletedRows: { index: number; row: Record<string, unknown> }[] }
 
 const props = defineProps<{ connectionId: string; database: string; table: string; activeSection?: TableSection }>()
 const emit = defineEmits<{ 'update:activeSection': [value: TableSection]; transactionStatus: [connectionId: string, pending: boolean, pendingStatements: number]; 'open-database': [database: string]; 'open-table': [table: string]; tableDeleted: [connectionId: string, database: string, table: string]; databaseDeleted: [connectionId: string, database: string] }>()
@@ -79,6 +80,9 @@ const displayedResult = computed(() => {
   }))
   return { ...current, rows, rowCount: rows.length, hasMore: false }
 })
+const primaryKey = computed(() => structure.value?.constraints.find((constraint) => constraint.type === 'PRIMARY KEY')?.columns ?? structure.value?.columns.filter((column) => column.key === 'PRI').map((column) => column.name) ?? [])
+const canModifyDataRows = computed(() => !dataSearchActive.value && primaryKey.value.length > 0)
+const dataInsertTarget = computed(() => ({ database: props.database, table: props.table, columns: result.value?.columns.map((column) => column.name) ?? [] }))
 
 async function openDataSearch() {
   showDataSearch.value = true
@@ -98,6 +102,7 @@ function handleDataSearchShortcut(event: KeyboardEvent) {
 
 async function loadData() {
   if (dataEditing.value && !dataDirty.value) dataEditing.value = false
+  if (!structure.value) void loadStructure()
   loading.value = true
   error.value = ''
   try {
@@ -177,15 +182,26 @@ function selectAllDdl(event: KeyboardEvent) {
   selection?.removeAllRanges()
   selection?.addRange(range)
 }
-async function saveDataEdits(edited: QueryResult) {
-  if (!result.value) return
+function samePrimaryKey(left: Record<string, unknown>, right: Record<string, unknown>) { return primaryKey.value.every((column) => Object.is(left[column], right[column])) }
+function insertValues(row: Record<string, unknown>, useDefaults: boolean) {
+  return Object.fromEntries((structure.value?.columns ?? []).filter((column) => (!primaryKey.value.includes(column.name) || useDefaults) && (!useDefaults || (row[column.name] !== null && row[column.name] !== undefined))).map((column) => [column.name, row[column.name]]))
+}
+async function saveDataEdits(edited: QueryResult, mutations: GridRowMutations = { insertedRows: [], deletedRows: [] }) {
+  if (!result.value || !primaryKey.value.length) return
   try {
-    const updates = queryResultEdits(result.value, edited)
+    const deletedIndexes = new Set(mutations.deletedRows.map((deleted) => deleted.index))
+    const insertedIndexes = new Set(mutations.insertedRows.map((inserted) => inserted.index))
+    const originalRows = result.value.rows.filter((row) => !mutations.deletedRows.some((deleted) => samePrimaryKey(row, deleted.row)))
+    const editedRows = edited.rows.filter((_, index) => !deletedIndexes.has(index) && !insertedIndexes.has(index))
+    const updates = queryResultEdits({ ...result.value, rows: originalRows, rowCount: originalRows.length }, { ...edited, rows: editedRows, rowCount: editedRows.length }, { editableColumns: structure.value?.columns.map((column) => column.name), keyColumns: primaryKey.value })
     let transaction: QueryResult | undefined
     for (const update of updates) transaction = await api<QueryResult>(`/connections/${props.connectionId}/rows/update`, { method: 'POST', body: { database: props.database, table: props.table, ...update } })
+    for (const inserted of mutations.insertedRows) transaction = await api<QueryResult>(`/connections/${props.connectionId}/rows/insert`, { method: 'POST', body: { database: props.database, table: props.table, values: insertValues(inserted.row, inserted.useDefaults) } })
+    for (const deleted of mutations.deletedRows) transaction = await api<QueryResult>(`/connections/${props.connectionId}/rows/delete`, { method: 'POST', body: { database: props.database, table: props.table, original: Object.fromEntries(primaryKey.value.map((column) => [column, deleted.row[column]])) } })
     result.value = edited
     dataEditing.value = false
     if (transaction) emit('transactionStatus', props.connectionId, transaction.transactionPending, transaction.pendingStatements)
+    if (mutations.insertedRows.length || mutations.deletedRows.length) await loadData()
   } catch (cause: unknown) { notifyError(cause instanceof Error ? cause.message : String(cause)) }
 }
 const sourceConnectionOptions = computed(() => workspace.connections.map((connection) => ({ value: connection.id, label: connection.name, disabled: connection.status !== 'connected' })))
@@ -451,7 +467,7 @@ watch(() => source.database, async (database) => {
   catch (cause: any) { notifyError(cause.message) }
   finally { sourceLoading.value = false }
 })
-watch(() => [props.connectionId, props.database, props.table], loadData, { immediate: true })
+watch(() => [props.connectionId, props.database, props.table], () => { structure.value = undefined; void loadData() }, { immediate: true })
 watch(error, (message) => { if (message) { notifyError(message); error.value = '' } })
 // Pending edits cannot survive a narrowed grid, so drop them when filtering starts.
 watch(dataSearchActive, (active) => { if (active && dataEditing.value) dataGrid.value?.cancel() })
@@ -496,7 +512,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleDataSearchShor
         <span v-if="dataSearchActive" class="shrink-0 text-muted">{{ displayedResult?.rows.length ? t('table.searchMatches', { count: displayedResult.rows.length, total: result?.rows.length || 0 }) : t('table.searchNoMatches') }}</span>
         <button type="button" class="grid shrink-0 rounded p-1 text-muted hover:bg-canvas hover:text-ink" :title="t('table.searchClose')" :aria-label="t('table.searchClose')" @click="closeDataSearch"><Icon name="lucide:x" class="h-4 w-4" aria-hidden="true" /></button>
       </div>
-      <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="displayedResult" :editable="!dataSearchActive" :loading="loading" :view="dataView" :editing="dataEditing" :sortable="true" :sort-column="sortColumn" :sort-direction="sortDirection" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
+      <div class="min-h-0 flex-1"><DataGrid ref="dataGrid" :result="displayedResult" :editable="!dataSearchActive" :loading="loading" :view="dataView" :editing="dataEditing" :sortable="true" :sort-column="sortColumn" :sort-direction="sortDirection" :primary-key="primaryKey" :insert-target="dataInsertTarget" :row-actions="canModifyDataRows" @start-edit="dataEditing = true" @save="saveDataEdits" @cancel="dataEditing = false" @sort="toggleSort" /></div>
     </template>
     <div v-else-if="section === 'structure'" class="scrollbar overflow-auto p-4">
       <div class="mb-4 flex items-center justify-between gap-3">

@@ -20,7 +20,7 @@ case "$(uname -s)" in
   Darwin) platform_script='install-macos.sh' ;;
   Linux) platform_script='install-linux.sh' ;;
   MINGW*|MSYS*|CYGWIN*)
-    fail 'Windows source bootstrapping is intentionally unsupported. The recommended distribution is a signed installer from https://github.com/alexclaz/dbfock/releases (not published yet).'
+    fail 'Windows source bootstrapping is intentionally unsupported. Download the Windows installer from https://github.com/alexclaz/dbfock/releases/latest instead.'
     ;;
   *) fail "Unsupported operating system: $(uname -s)." ;;
 esac

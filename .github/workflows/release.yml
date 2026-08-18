@@ -1,0 +1,231 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WAILS: github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: read
+        run: |
+          version="$(tr -d '[:space:]' < backend/version.txt)"
+          tag="v$version"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "$tag" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match backend/version.txt ($version)." >&2
+            echo "The in-app update check reads backend/version.txt, so both must agree." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux (amd64)
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build desktop app
+        run: |
+          make prepare-desktop-icon
+          cd backend
+          go run "$WAILS" build -platform linux/amd64 -tags webkit2_41
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          stage="dist/dbfock"
+          mkdir -p "$stage"
+          cp backend/build/bin/DBfock "$stage/DBfock"
+          cp backend/appicon.png "$stage/dbfock.png"
+          chmod 755 "$stage/DBfock"
+
+          cat > "$stage/install.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # Install DBfock for the current user.
+          set -euo pipefail
+
+          here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          binary="$HOME/.local/bin/dbfock"
+          desktop_file="$HOME/.local/share/applications/dbfock.desktop"
+          icon_file="$HOME/.local/share/icons/hicolor/512x512/apps/dbfock.png"
+
+          mkdir -p "$(dirname "$binary")" "$(dirname "$desktop_file")" "$(dirname "$icon_file")"
+          install -m 755 "$here/DBfock" "$binary"
+          install -m 644 "$here/dbfock.png" "$icon_file"
+
+          cat > "$desktop_file" <<DESKTOP
+          [Desktop Entry]
+          Type=Application
+          Name=DBfock
+          Comment=MySQL workspace
+          Exec=$binary
+          Icon=dbfock
+          Terminal=false
+          Categories=Development;Database;
+          DESKTOP
+
+          command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$(dirname "$desktop_file")" || true
+
+          printf '\nInstalled: %s\n' "$binary"
+          printf 'Open DBfock from your application menu, or run: %s\n' "$binary"
+          EOF
+          chmod 755 "$stage/install.sh"
+
+          cat > "$stage/README.txt" <<'EOF'
+          DBfock for Linux (x86_64)
+
+          Requires GTK 3 and WebKit2GTK 4.1 at runtime:
+            Debian/Ubuntu  sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0
+            Fedora         sudo dnf install gtk3 webkit2gtk4.1
+            Arch           sudo pacman -S gtk3 webkit2gtk-4.1
+
+          Install for the current user:
+            ./install.sh
+
+          Or run it straight from this folder:
+            ./DBfock
+          EOF
+
+          tar -czf "dbfock_${VERSION}_linux_amd64.tar.gz" -C dist dbfock
+          sha256sum "dbfock_${VERSION}_linux_amd64.tar.gz" > "dbfock_${VERSION}_linux_amd64.tar.gz.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: dbfock_*_linux_amd64.tar.gz*
+          if-no-files-found: error
+
+  windows:
+    name: Windows (amd64)
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build desktop app
+        run: |
+          New-Item -ItemType Directory -Force -Path backend/build | Out-Null
+          Copy-Item backend/appicon.png backend/build/appicon.png -Force
+          Set-Location backend
+          go run $env:WAILS build -platform windows/amd64 -webview2 embed
+
+      - name: Package portable build
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $stage = 'dist/dbfock'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item backend/build/bin/DBfock.exe "$stage/DBfock.exe" -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "dbfock_${env:VERSION}_windows_amd64.zip" -Force
+
+      - name: Build installer
+        continue-on-error: true
+        run: |
+          Set-Location backend
+          go run $env:WAILS build -platform windows/amd64 -webview2 embed -nsis -s
+
+      - name: Collect installer
+        continue-on-error: true
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $installer = Get-ChildItem backend/build/bin -Filter '*installer.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($installer) { Copy-Item $installer.FullName "dbfock_${env:VERSION}_windows_amd64_setup.exe" -Force }
+          else { Write-Host 'No NSIS installer produced; shipping the portable zip only.' }
+
+      - name: Checksums
+        run: |
+          Get-ChildItem -Filter 'dbfock_*' | Where-Object { $_.Name -notlike '*.sha256' } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -Encoding ascii "$($_.Name).sha256"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: dbfock_*windows_amd64*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [version, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: DBfock ${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*

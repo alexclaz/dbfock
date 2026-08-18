@@ -20,7 +20,14 @@ The installer builds DBfock locally and installs it in `/Applications` on macOS 
 curl -fsSL https://raw.githubusercontent.com/alexclaz/dbfock/main/install.sh | DBFOCK_YES=1 bash
 ```
 
-Windows support will be distributed through [GitHub Releases](https://github.com/alexclaz/dbfock/releases).
+### Prebuilt downloads
+
+Windows and Linux builds are published on the [releases page](https://github.com/alexclaz/dbfock/releases/latest):
+
+- **Windows (x64):** run `dbfock_<version>_windows_amd64_setup.exe`, or unzip `dbfock_<version>_windows_amd64.zip` for a portable build. WebView2 is bundled.
+- **Linux (x64):** unpack `dbfock_<version>_linux_amd64.tar.gz` and run `./install.sh` to install into `~/.local`. Requires GTK 3 and WebKit2GTK 4.1.
+
+Each asset ships a `.sha256` file next to it.
 
 ## What it does
 

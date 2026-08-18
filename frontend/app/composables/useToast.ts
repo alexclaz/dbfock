@@ -13,5 +13,5 @@ export function useToast() {
     return id
   }
 
-  return { toasts, dismiss, show, success: (message: string) => show(message, 'success'), error: (message: string) => show(message, 'error'), info: (message: string) => show(message, 'info') }
+  return { toasts, dismiss, show, success: (message: string) => show(message, 'success'), error: (message: string) => show(message, 'error', 8000), info: (message: string) => show(message, 'info') }
 }

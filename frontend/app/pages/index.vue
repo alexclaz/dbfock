@@ -121,7 +121,15 @@ function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai
 function openHome() { workspace.openTab({ id: 'welcome', title: t('search.home'), type: 'welcome' }) }
 function openConnectionHome(connection: Connection) {
   workspace.activeConnectionId = connection.id
-  workspace.openTab({ id: `connection-home:${connection.id}`, title: connection.name, type: 'connection-home', connectionId: connection.id })
+  const tab: WorkspaceTab = { id: `connection-home:${connection.id}`, title: connection.name, type: 'connection-home', connectionId: connection.id }
+  const existingIndex = workspace.tabs.findIndex((item) => item.id === tab.id)
+  if (existingIndex >= 0) {
+    workspace.tabs[existingIndex] = tab
+    navigatorHistory[tab.id] = [{ ...tab }]
+    navigatorHistoryIndex[tab.id] = 0
+    workspace.refreshTabContent(tab.id)
+  }
+  workspace.openTab(tab)
 }
 function openSavedQueries() { workspace.openTab({ id: 'saved-queries', title: t('savedQueries.title'), type: 'saved' }) }
 function openSmartQueries() { workspace.openTab({ id: 'smart-queries', title: t('smartQueries.title'), type: 'smart' }) }
@@ -260,22 +268,68 @@ function requestCloseOtherTabs(id: string) {
   requestCloseTabs(workspace.tabs.filter((tab) => tab.id !== id))
 }
 
-function openTable(connection: Connection, database: string, table: string, section?: NonNullable<WorkspaceTab['tableSection']>) {
-  workspace.activeConnectionId = connection.id
-  const id = `table:${connection.id}:${database}:${table}`
-  const existing = workspace.tabs.find((tab) => tab.id === id)
-  if (existing && section && existing.tableSection !== section) { existing.tableSection = section; existing.dirty = true }
-  // Opening a table that is already open is a request for its current data.
-  if (existing) workspace.refreshTabContent(id)
-  workspace.openTab({ id, title: table, type: 'table', connectionId: connection.id, database, table, tableSection: section })
+const navigatorTabId = 'navigator'
+const navigatorHistory = reactive<Record<string, WorkspaceTab[]>>({})
+const navigatorHistoryIndex = reactive<Record<string, number>>({})
+function reusableTabId() {
+  const active = workspace.tabs.find((item) => item.id === workspace.activeTabId)
+  return active?.type === 'connection-home' || active?.id === navigatorTabId || (active && navigatorHistory[active.id]) ? active?.id ?? navigatorTabId : navigatorTabId
 }
-function openDatabase(connection: Connection, database: string, section?: NonNullable<WorkspaceTab['databaseSection']>) {
+function showNavigatorSnapshot(id: string, tab: WorkspaceTab) {
+  if (tab.connectionId) workspace.activeConnectionId = tab.connectionId
+  const existingIndex = workspace.tabs.findIndex((item) => item.id === id)
+  if (existingIndex >= 0) {
+    workspace.tabs[existingIndex] = { ...tab, id }
+    workspace.refreshTabContent(id)
+    workspace.openTab(workspace.tabs[existingIndex]!)
+    return
+  }
+  workspace.openTab({ ...tab, id })
+}
+function openInNavigator(tab: WorkspaceTab) {
+  const id = reusableTabId()
+  const current = workspace.tabs.find((item) => item.id === id)
+  const history = navigatorHistory[id] || (current ? [{ ...current }] : [])
+  const index = navigatorHistoryIndex[id] ?? history.length - 1
+  navigatorHistory[id] = [...history.slice(0, index + 1), { ...tab }]
+  navigatorHistoryIndex[id] = navigatorHistory[id].length - 1
+  showNavigatorSnapshot(id, tab)
+}
+const canGoBack = computed(() => (navigatorHistoryIndex[workspace.activeTabId] ?? 0) > 0)
+const canGoForward = computed(() => {
+  const history = navigatorHistory[workspace.activeTabId] || []
+  return (navigatorHistoryIndex[workspace.activeTabId] ?? -1) < history.length - 1
+})
+function goBack() {
+  const id = workspace.activeTabId
+  if ((navigatorHistoryIndex[id] ?? 0) > 0) {
+    navigatorHistoryIndex[id] -= 1
+    const tab = navigatorHistory[id]?.[navigatorHistoryIndex[id]]
+    if (tab) showNavigatorSnapshot(id, tab)
+    return
+  }
+}
+function goForward() {
+  const id = workspace.activeTabId
+  const history = navigatorHistory[id] || []
+  if ((navigatorHistoryIndex[id] ?? -1) < history.length - 1) {
+    navigatorHistoryIndex[id] += 1
+    const tab = history[navigatorHistoryIndex[id]]
+    if (tab) showNavigatorSnapshot(id, tab)
+    return
+  }
+}
+function openTable(connection: Connection, database: string, table: string, section?: NonNullable<WorkspaceTab['tableSection']>, newTab = false) {
   workspace.activeConnectionId = connection.id
-  const id = `database:${connection.id}:${database}`
-  const existing = workspace.tabs.find((tab) => tab.id === id)
-  if (existing && section && existing.databaseSection !== section) { existing.databaseSection = section; existing.dirty = true }
-  if (existing) workspace.refreshTabContent(id)
-  workspace.openTab({ id, title: database, type: 'database', connectionId: connection.id, database, databaseSection: section })
+  const tab: WorkspaceTab = { id: `table:${connection.id}:${database}:${table}:${Date.now()}`, title: table, type: 'table', connectionId: connection.id, database, table, tableSection: section }
+  if (newTab) workspace.openTab(tab)
+  else openInNavigator(tab)
+}
+function openDatabase(connection: Connection, database: string, section?: NonNullable<WorkspaceTab['databaseSection']>, newTab = false) {
+  workspace.activeConnectionId = connection.id
+  const tab: WorkspaceTab = { id: `database:${connection.id}:${database}:${Date.now()}`, title: database, type: 'database', connectionId: connection.id, database, databaseSection: section }
+  if (newTab) workspace.openTab(tab)
+  else openInNavigator(tab)
 }
 function openDatabaseTable(table: string) {
   const connection = workspace.connections.find((item) => item.id === activeTab.value.connectionId)
@@ -859,16 +913,16 @@ watch(connectionsWidth, (width) => {
 })
 watch(() => workspace.activeConnectionId, () => {
   if (visibleTabs.value.some((tab) => tab.id === workspace.activeTabId)) return
-  workspace.activeTabId = visibleTabs.value.find((tab) => tab.connectionId === workspace.activeConnectionId)?.id || 'welcome'
+  workspace.activeTabId = visibleTabs.value.find((tab) => tab.connectionId === workspace.activeConnectionId)?.id || ''
 })
 </script>
 
 <template>
   <div class="flex h-full">
-    <DatabaseTree ref="databaseTree" :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @database="openDatabase" @connection-home="openConnectionHome" @new-query="(connection, database, table) => openSQLForConnection(connection.id, { database, table })" @create-database="pendingDatabaseConnection = $event" @edit="editing = $event; showConnection = true" @stats="openStats" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @history="openQueryHistory" @settings="openSettings" />
+    <DatabaseTree ref="databaseTree" :connections="workspace.connections" :active-connection-id="workspace.activeConnectionId" :width="connectionsWidth" @choose="workspace.activeConnectionId = $event" @table="openTable" @table-new-tab="(connection, database, table) => openTable(connection, database, table, undefined, true)" @database="openDatabase" @database-new-tab="(connection, database) => openDatabase(connection, database, undefined, true)" @connection-home="openConnectionHome" @new-query="(connection, database, table) => openSQLForConnection(connection.id, { database, table })" @create-database="pendingDatabaseConnection = $event" @edit="editing = $event; showConnection = true" @stats="openStats" @add="editing = undefined; showConnection = true" @home="openHome" @saved="openSavedQueries" @smart="openSmartQueries" @history="openQueryHistory" @settings="openSettings" />
     <div class="w-1.5 shrink-0 cursor-col-resize bg-line hover:bg-accent" @pointerdown="resizeConnections" />
     <section class="flex min-w-0 flex-1 flex-col">
-      <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" :can-reopen="recentlyClosedTabs.length > 0" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reopen="reopenLastClosedTab" @reorder="workspace.moveTab" @new-query="newSQL" />
+      <WorkspaceTabs :tabs="visibleTabs" :active-id="workspace.activeTabId" :can-reopen="recentlyClosedTabs.length > 0" :can-go-back="canGoBack" :can-go-forward="canGoForward" @select="selectTab" @close="requestCloseTab" @close-right="requestCloseTabsToRight" @close-others="requestCloseOtherTabs" @save="saveTabById" @reopen="reopenLastClosedTab" @reorder="workspace.moveTab" @new-query="newSQL" @back="goBack" @forward="goForward" />
       <div v-if="activeTransaction?.pending && activeTransactionConnectionId" class="flex shrink-0 items-center justify-between gap-4 border-b border-amber-500/25 bg-amber-500/5 px-4 py-2 text-xs">
         <div class="flex min-w-0 items-center gap-2"><span class="truncate font-medium text-ink">{{ activeTransactionConnection?.name }}</span><span class="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-ink">{{ t('transaction.pending', { count: activeTransaction.pendingStatements }) }}</span></div>
         <div class="flex shrink-0 gap-2"><button class="rounded px-2 py-1 text-rose-700 hover:bg-amber-500/10 dark:text-rose-300" :disabled="committing" @click="requestCommit(activeTransactionConnectionId)">{{ t('transaction.rollback') }}</button><button class="rounded bg-amber-600 px-2.5 py-1 font-medium text-white disabled:opacity-50" :disabled="committing" @click="requestCommit(activeTransactionConnectionId)">{{ committing ? t('transaction.committing') : t('transaction.commit') }}</button></div>

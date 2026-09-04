@@ -2,7 +2,7 @@
 import type { Connection, DatabaseInfo, TableInfo } from '~/types/database'
 
 const props = defineProps<{ connections: Connection[]; activeConnectionId?: string; width?: number }>()
-const emit = defineEmits<{ choose: [id: string]; table: [connection: Connection, database: string, table: string, section?: 'data' | 'structure' | 'tools']; database: [connection: Connection, database: string, section?: 'tables' | 'diagram' | 'tools']; connectionHome: [connection: Connection]; newQuery: [connection: Connection, database?: string, table?: string]; createDatabase: [connection: Connection]; edit: [connection: Connection]; stats: [connection: Connection]; add: []; home: []; saved: []; smart: []; history: []; settings: [] }>()
+const emit = defineEmits<{ choose: [id: string]; table: [connection: Connection, database: string, table: string, section?: 'data' | 'structure' | 'tools']; tableNewTab: [connection: Connection, database: string, table: string]; database: [connection: Connection, database: string, section?: 'tables' | 'diagram' | 'tools']; databaseNewTab: [connection: Connection, database: string]; connectionHome: [connection: Connection]; newQuery: [connection: Connection, database?: string, table?: string]; createDatabase: [connection: Connection]; edit: [connection: Connection]; stats: [connection: Connection]; add: []; home: []; saved: []; smart: []; history: []; settings: [] }>()
 const api = useApi()
 const workspace = useWorkspaceStore()
 const { t } = useI18n()
@@ -137,6 +137,7 @@ function connectionMenuActions(connection: Connection): MenuAction[] {
 }
 function databaseMenuActions(connection: Connection, database: string): MenuAction[] {
   return [
+    { key: 'openInNewTab', icon: 'lucide:panel-top-open', label: t('tree.openInNewTab'), run: () => emit('databaseNewTab', connection, database) },
     { key: 'newQuery', icon: 'lucide:file-plus-2', label: t('home.newQuery'), run: () => emit('newQuery', connection, database) },
     { key: 'tables', icon: 'lucide:table-2', label: t('database.viewTables'), run: () => emit('database', connection, database, 'tables') },
     { key: 'diagram', icon: 'lucide:git-fork', label: t('database.viewDiagram'), run: () => emit('database', connection, database, 'diagram') },
@@ -145,6 +146,7 @@ function databaseMenuActions(connection: Connection, database: string): MenuActi
 }
 function tableMenuActions(connection: Connection, database: string, table: string): MenuAction[] {
   return [
+    { key: 'openInNewTab', icon: 'lucide:panel-top-open', label: t('tree.openInNewTab'), run: () => emit('tableNewTab', connection, database, table) },
     { key: 'newQuery', icon: 'lucide:file-plus-2', label: t('home.newQuery'), run: () => emit('newQuery', connection, database, table) },
     { key: 'data', icon: 'lucide:table-2', label: t('table.data'), run: () => emit('table', connection, database, table, 'data') },
     { key: 'structure', icon: 'lucide:columns-3', label: t('table.structure'), run: () => emit('table', connection, database, table, 'structure') },
@@ -222,7 +224,7 @@ defineExpose({ refreshConnection })
       </div>
       <div class="mb-2 flex items-center justify-between px-2"><p class="text-[11px] font-semibold uppercase tracking-wider text-muted">{{ t('tree.connections') }}</p><button class="grid rounded p-1.5 text-muted hover:bg-canvas hover:text-ink" :title="t('tree.newConnection')" :aria-label="t('tree.newConnection')" @click="$emit('add')"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" /></button></div>
       <div v-for="connection in filteredConnections" :key="connection.id">
-        <div class="group relative flex items-center gap-1 rounded-md px-1 py-1 hover:bg-canvas" :class="activeConnectionId === connection.id ? 'bg-canvas' : ''" @contextmenu.prevent.stop="openConnectionMenu($event, connection)">
+        <div class="group relative flex items-center gap-1 rounded-md px-1 py-1 hover:bg-canvas" :class="activeConnectionId === connection.id ? 'bg-accent/10 font-semibold text-ink ring-1 ring-inset ring-accent/30 shadow-[inset_3px_0_0_rgb(59_130_246)]' : ''" @contextmenu.prevent.stop="openConnectionMenu($event, connection)">
           <button type="button" class="grid w-5 place-items-center text-muted disabled:opacity-40" :disabled="connection.status !== 'connected'" @click.stop="toggleConnection(connection)"><Icon :name="expanded.has(`c:${connection.id}`) ? 'lucide:chevron-down' : 'lucide:chevron-right'" class="h-3.5 w-3.5" aria-hidden="true" /></button>
           <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left text-sm" @click="emit('choose', connection.id)" @dblclick="handleConnectionDoubleClick(connection)"><i class="h-2.5 w-2.5 rounded-full ring-2 ring-panel" :style="{ backgroundColor: connection.color }" /><i class="h-1.5 w-1.5 rounded-full" :class="connection.status === 'connected' ? 'bg-emerald-500' : 'bg-muted'" /><span class="truncate">{{ connection.name }}</span><span v-if="connection.environment === 'production'" class="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-700 dark:text-amber-300">{{ t('connection.production') }}</span></button>
           <button type="button" class="grid h-6 w-6 shrink-0 place-items-center rounded text-muted opacity-0 hover:bg-line hover:text-ink group-hover:opacity-100" :title="t('home.newQuery')" :aria-label="t('home.newQuery')" @click.stop="$emit('newQuery', connection)"><Icon name="lucide:file-plus-2" class="h-3.5 w-3.5" aria-hidden="true" /></button>

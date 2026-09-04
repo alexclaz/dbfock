@@ -2,8 +2,8 @@
 import type { WorkspaceTab } from '~/types/database'
 import { workspaceIcon } from '~/utils/icons'
 
-const props = defineProps<{ tabs: WorkspaceTab[]; activeId: string; canReopen: boolean }>()
-const emit = defineEmits<{ select: [id: string]; close: [id: string]; closeRight: [id: string]; closeOthers: [id: string]; save: [id: string]; reopen: []; reorder: [id: string, targetId: string]; newQuery: [] }>()
+const props = defineProps<{ tabs: WorkspaceTab[]; activeId: string; canReopen: boolean; canGoBack: boolean; canGoForward: boolean }>()
+const emit = defineEmits<{ select: [id: string]; close: [id: string]; closeRight: [id: string]; closeOthers: [id: string]; save: [id: string]; reopen: []; reorder: [id: string, targetId: string]; newQuery: []; back: []; forward: [] }>()
 const { t } = useI18n()
 const contextMenu = ref<{ tab: WorkspaceTab; x: number; y: number }>()
 
@@ -70,6 +70,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-9 overflow-hidden border-b border-line bg-panel" @click="closeContextMenu">
+    <div class="flex shrink-0 items-center border-r border-line px-1">
+      <button type="button" class="focus-ring grid h-7 w-7 place-items-center rounded text-muted hover:bg-canvas hover:text-ink disabled:cursor-not-allowed disabled:opacity-40" :title="t('tabs.back')" :aria-label="t('tabs.back')" :disabled="!canGoBack" @click.stop="emit('back')"><Icon name="lucide:arrow-left" class="h-3.5 w-3.5" aria-hidden="true" /></button>
+      <button type="button" class="focus-ring grid h-7 w-7 place-items-center rounded text-muted hover:bg-canvas hover:text-ink disabled:cursor-not-allowed disabled:opacity-40" :title="t('tabs.forward')" :aria-label="t('tabs.forward')" :disabled="!canGoForward" @click.stop="emit('forward')"><Icon name="lucide:arrow-right" class="h-3.5 w-3.5" aria-hidden="true" /></button>
+    </div>
     <div v-for="tab in tabs" :key="tab.id" :draggable="!isPinned(tab)" class="group relative -mb-px flex h-9 min-w-0 flex-1 items-center overflow-hidden border-b-2 border-r border-line px-2 text-xs transition-colors" :class="activeId === tab.id ? 'border-b-accent bg-accent/10 font-semibold text-ink shadow-[inset_0_1px_0_rgba(59,130,246,0.2)]' : 'border-b-transparent text-muted hover:bg-canvas/60 hover:text-ink'" @contextmenu.prevent.stop="openContextMenu($event, tab)" @dragstart="startDrag($event, tab)" @dragover.prevent="allowMoveDrop" @drop.prevent="{ const id = $event.dataTransfer?.getData('text/plain'); if (id) emit('reorder', id, tab.id) }">
       <button type="button" class="flex min-w-0 flex-1 items-center gap-1 text-left" :aria-current="activeId === tab.id ? 'page' : undefined" @click.stop="selectTab(tab.id)">
         <Icon v-if="!isPinned(tab)" name="lucide:grip-vertical" class="h-3.5 w-3.5 shrink-0 cursor-grab text-muted" :title="t('tabs.dragToReorder')" aria-hidden="true" />

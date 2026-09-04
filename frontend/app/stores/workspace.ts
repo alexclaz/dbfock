@@ -142,9 +142,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
           return normalizedTab.aiJobId ? { ...normalizedTab, aiStatus: 'running' } : normalizedTab
         }))
       }
-      const homeTab = tabs.value.find((tab) => tab.id === homeTabId)
-      if (homeTab) homeTab.title = 'Home'
-      else tabs.value = orderedTabs([...tabs.value, ...defaultTabs()])
+      // An explicitly saved empty list means the user closed every tab.
+      // Preserve it rather than recreating Home on the next launch.
+      if (restoredTabs?.length !== 0) {
+        const homeTab = tabs.value.find((tab) => tab.id === homeTabId)
+        if (homeTab) homeTab.title = 'Home'
+        else tabs.value = orderedTabs([...tabs.value, ...defaultTabs()])
+      }
       savedQueries.value = parseSavedQueries(saved.savedQueries)
       smartQueries.value = parseSmartQueries(saved.smartQueries)
       queryTabHistory.value = parseQueryTabHistory(saved.queryTabHistory)
@@ -152,6 +156,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       queryTabSequence.value = typeof saved.queryTabSequence === 'number' && Number.isInteger(saved.queryTabSequence) && saved.queryTabSequence >= largestTabNumber ? saved.queryTabSequence : largestTabNumber
       activeTabIdsByConnection.value = parseActiveTabIdsByConnection(saved.activeTabIdsByConnection)
       if (saved.activeTabId && tabs.value.some((tab) => tab.id === saved.activeTabId)) activeTabId.value = saved.activeTabId
+      else if (!tabs.value.length) activeTabId.value = ''
       if (typeof saved.activeConnectionId === 'string') activeConnectionId.value = saved.activeConnectionId
     } catch { /* Start with the default workspace when saved state is invalid. */ }
     finally { restored.value = true }
@@ -190,7 +195,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (rememberedTab) {
       activeTabId.value = rememberedTab.id
     } else if (currentTab?.connectionId !== connectionId) {
-      activeTabId.value = tabs.value.find((tab) => tab.connectionId === connectionId)?.id || homeTabId
+      activeTabId.value = tabs.value.find((tab) => tab.connectionId === connectionId)?.id || ''
     }
   }
 
@@ -268,8 +273,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       : [...tabs.value.slice(0, activeIndex)].reverse().find((tab) => !closableIds.has(tab.id))?.id || tabs.value.slice(activeIndex + 1).find((tab) => !closableIds.has(tab.id))?.id || ''
     const remainingTabs = tabs.value.filter((tab) => !closableIds.has(tab.id))
     if (!remainingTabs.length) {
-      tabs.value = defaultTabs()
-      activeTabId.value = homeTabId
+      tabs.value = []
+      activeTabId.value = ''
       return
     }
     tabs.value = remainingTabs

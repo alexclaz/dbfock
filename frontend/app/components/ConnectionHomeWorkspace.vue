@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Connection, DatabaseInfo } from '~/types/database'
 
-type ConnectionSection = 'databases' | 'users' | 'tools'
+type ConnectionSection = 'databases' | 'users' | 'migration' | 'tools'
 const props = defineProps<{ connection: Connection }>()
 const emit = defineEmits<{ edit: [connection: Connection]; newQuery: [connection: Connection]; stats: [connection: Connection]; database: [connection: Connection, database: string] }>()
 const api = useApi()
@@ -24,6 +24,7 @@ const dumping = ref(false)
 const sections: { id: ConnectionSection; label: string; icon: string }[] = [
   { id: 'databases', label: 'connectionHome.databases', icon: 'lucide:database' },
   { id: 'users', label: 'connectionUsers.title', icon: 'lucide:users-round' },
+  { id: 'migration', label: 'database.tools.migrationTitle', icon: 'lucide:arrow-right-left' },
   { id: 'tools', label: 'connectionHome.tools', icon: 'lucide:wrench' },
 ]
 
@@ -101,10 +102,10 @@ watch(activeSection, (section) => { if (isActive.value && section === 'databases
 
       <div class="mt-6 flex min-h-0 flex-1 flex-col gap-6 md:flex-row"><nav class="flex shrink-0 gap-1 overflow-x-auto border-b border-line pb-4 md:w-52 md:flex-col md:overflow-visible md:border-b-0 md:border-r md:pb-0 md:pr-5"><button v-for="section in sections" :key="section.id" type="button" class="connection-nav flex items-center gap-2 whitespace-nowrap" :class="activeSection === section.id ? 'connection-nav-active' : ''" @click="activeSection = section.id"><Icon :name="section.icon" class="h-4 w-4 shrink-0" aria-hidden="true" />{{ t(section.label) }}</button></nav>
         <div class="min-w-0 flex-1 pb-8"><template v-if="activeSection === 'databases'"><div class="flex flex-wrap items-end justify-between gap-4"><div><h2 class="text-base font-semibold">{{ t('connectionHome.databases') }}</h2><p class="mt-1 text-sm text-muted">{{ t('connectionHome.databasesDescription') }}</p></div><div class="flex flex-1 flex-wrap items-center justify-end gap-2"><label v-if="databases?.length" class="flex min-w-56 flex-1 items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-muted shadow-sm sm:max-w-xs"><Icon name="lucide:search" class="h-4 w-4 shrink-0" aria-hidden="true" /><span class="sr-only">{{ t('stats.filter') }}</span><input ref="filterInput" v-model="filter" class="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted" :placeholder="t('stats.filterPlaceholder')"></label><button v-if="connection.status === 'connected'" type="button" class="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="creatingDatabase" @click="showCreateDatabase = true"><Icon name="lucide:plus" class="h-4 w-4" aria-hidden="true" />{{ creatingDatabase ? t('connectionHome.creatingDatabase') : t('connectionHome.createDatabase') }}</button></div></div><p v-if="connection.status !== 'connected'" class="mt-4 rounded-md border border-line bg-canvas px-3 py-2 text-sm text-muted">{{ t('connectionHome.connectPrompt') }}</p><p v-else-if="databasesError" class="mt-4 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:border-rose-900 dark:bg-rose-950/30">{{ databasesError }}</p><div v-else-if="loadingDatabases && !databases" class="grid h-24 place-items-center text-sm text-muted">{{ t('tree.loadingDatabases') }}</div><template v-else><div v-if="filteredDatabases.length" class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><button v-for="database in filteredDatabases" :key="database.name" type="button" class="group flex items-center justify-between gap-2 rounded-lg border border-line bg-panel p-3 text-left hover:border-accent/40 hover:bg-canvas" @click="emit('database', connection, database.name)"><span class="flex min-w-0 items-center gap-2 text-sm font-medium"><Icon name="lucide:database" class="h-4 w-4 shrink-0 text-muted" aria-hidden="true" /><span class="truncate">{{ database.name }}</span></span><Icon name="lucide:arrow-right" class="h-3.5 w-3.5 shrink-0 text-muted opacity-0 group-hover:opacity-100" aria-hidden="true" /></button></div><p v-else class="mt-4 rounded-md border border-line bg-canvas px-3 py-8 text-center text-sm text-muted">{{ t('connectionHome.noDatabases') }}</p></template></template><ConnectionUsersWorkspace v-else-if="activeSection === 'users'" :connection="connection" :databases="databases || []" />
-            <template v-else>
+            <template v-else-if="activeSection === 'tools'">
               <div><h2 class="text-base font-semibold">{{ t('connectionHome.tools') }}</h2><p class="mt-1 text-sm text-muted">{{ t('connectionHome.toolsDescription') }}</p></div>
               <p v-if="connection.status !== 'connected'" class="mt-4 rounded-md border border-line bg-canvas px-3 py-2 text-sm text-muted">{{ t('connectionHome.toolsConnectPrompt') }}</p>
-              <div v-else class="mt-5 max-w-2xl">
+              <div v-else class="mt-5">
                 <section class="rounded-lg border border-line bg-panel p-4">
                   <h3 class="text-sm font-semibold">{{ t('connectionHome.dumpTitle') }}</h3>
                   <p class="mt-1 text-sm text-muted">{{ t('connectionHome.dumpDescription') }}</p>
@@ -112,6 +113,11 @@ watch(activeSection, (section) => { if (isActive.value && section === 'databases
                   <button type="button" class="mt-4 flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="dumping || !selectedDumpDatabases.length" @click="createDump"><Icon name="lucide:download" class="h-4 w-4" aria-hidden="true" />{{ dumping ? t('connectionHome.creatingDump') : t('connectionHome.createDump') }}</button>
                 </section>
               </div>
+            </template>
+            <template v-else>
+              <div><h2 class="text-base font-semibold">{{ t('connectionTools.migrationTitle') }}</h2><p class="mt-1 text-sm text-muted">{{ t('connectionHome.migrationDescription') }}</p></div>
+              <p v-if="connection.status !== 'connected'" class="mt-4 rounded-md border border-line bg-canvas px-3 py-2 text-sm text-muted">{{ t('connectionHome.migrationConnectPrompt') }}</p>
+              <ConnectionMigrationTools v-else :connection="connection" />
             </template>
           </div>
       </div>

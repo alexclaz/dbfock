@@ -145,6 +145,109 @@ type TableInfo struct {
 	Type        string `json:"type"`
 	ColumnCount int    `json:"columnCount"`
 }
+
+// SchemaComparison describes structural differences between two connections.
+// Equal tables are counted in the summary but omitted from Databases to keep
+// the response small even when large installations are nearly identical.
+type SchemaComparison struct {
+	SourceConnectionID string                     `json:"sourceConnectionId"`
+	TargetConnectionID string                     `json:"targetConnectionId"`
+	Summary            SchemaComparisonSummary    `json:"summary"`
+	Databases          []DatabaseSchemaDifference `json:"databases"`
+}
+type SchemaComparisonSummary struct {
+	DatabasesCompared int `json:"databasesCompared"`
+	TablesCompared    int `json:"tablesCompared"`
+	EqualTables       int `json:"equalTables"`
+	DifferentTables   int `json:"differentTables"`
+}
+type DatabaseSchemaDifference struct {
+	Name   string                  `json:"name"`
+	Status string                  `json:"status"`
+	Tables []TableSchemaDifference `json:"tables"`
+}
+type TableSchemaDifference struct {
+	Name    string                   `json:"name"`
+	Status  string                   `json:"status"`
+	Columns []ColumnSchemaDifference `json:"columns"`
+}
+type ColumnSchemaDifference struct {
+	Name          string  `json:"name"`
+	Status        string  `json:"status"`
+	SourceType    string  `json:"sourceType,omitempty"`
+	TargetType    string  `json:"targetType,omitempty"`
+	SourceNull    *bool   `json:"sourceNullable,omitempty"`
+	TargetNull    *bool   `json:"targetNullable,omitempty"`
+	SourceDefault *string `json:"sourceDefault,omitempty"`
+	TargetDefault *string `json:"targetDefault,omitempty"`
+	SourceExtra   string  `json:"sourceExtra,omitempty"`
+	TargetExtra   string  `json:"targetExtra,omitempty"`
+	SourceKey     string  `json:"sourceKey,omitempty"`
+	TargetKey     string  `json:"targetKey,omitempty"`
+}
+
+type DatabaseMigrationOptions struct {
+	Databases         []string `json:"databases"`
+	MaxTableSizeBytes int64    `json:"maxTableSizeBytes"`
+	Strategy          string   `json:"strategy"`
+	TargetDatabase    string   `json:"targetDatabase,omitempty"`
+	RecreateTarget    bool     `json:"recreateTarget,omitempty"`
+	StructureOnly     bool     `json:"structureOnly,omitempty"`
+	IgnoreDuplicates  bool     `json:"ignoreDuplicates,omitempty"`
+	CreateMissing     bool     `json:"createMissingTables,omitempty"`
+}
+type DatabaseMigrationPlan struct {
+	Databases      int                      `json:"databases"`
+	Tables         []DatabaseMigrationTable `json:"tables"`
+	SkippedTables  []DatabaseMigrationSkip  `json:"skippedTables"`
+	EstimatedRows  int64                    `json:"estimatedRows"`
+	TotalSizeBytes int64                    `json:"totalSizeBytes"`
+}
+type DatabaseMigrationTable struct {
+	Database      string `json:"database"`
+	Table         string `json:"table"`
+	SizeBytes     int64  `json:"sizeBytes"`
+	EstimatedRows int64  `json:"estimatedRows"`
+}
+type DatabaseMigrationResult struct {
+	DatabasesMigrated int                        `json:"databasesMigrated"`
+	TablesMigrated    int                        `json:"tablesMigrated"`
+	RowsMigrated      int64                      `json:"rowsMigrated"`
+	SkippedTables     []DatabaseMigrationSkip    `json:"skippedTables"`
+	FailedTables      []DatabaseMigrationFailure `json:"failedTables"`
+	ExecutionTimeMs   int64                      `json:"executionTimeMs"`
+}
+type DatabaseMigrationFailure struct {
+	Database string `json:"database"`
+	Table    string `json:"table"`
+	Error    string `json:"error"`
+}
+type DatabaseMigrationProgress struct {
+	TotalTables               int    `json:"totalTables"`
+	CompletedTables           int    `json:"completedTables"`
+	CurrentDatabase           string `json:"currentDatabase,omitempty"`
+	CurrentTable              string `json:"currentTable,omitempty"`
+	CurrentTableRows          int64  `json:"currentTableRows"`
+	CurrentTableEstimatedRows int64  `json:"currentTableEstimatedRows"`
+	RowsMigrated              int64  `json:"rowsMigrated"`
+}
+type DatabaseMigrationJob struct {
+	ID                 string                    `json:"id"`
+	SourceConnectionID string                    `json:"sourceConnectionId"`
+	TargetConnectionID string                    `json:"targetConnectionId"`
+	Status             string                    `json:"status"`
+	Progress           DatabaseMigrationProgress `json:"progress"`
+	Result             *DatabaseMigrationResult  `json:"result,omitempty"`
+	Error              string                    `json:"error,omitempty"`
+	CreatedAt          time.Time                 `json:"createdAt"`
+	UpdatedAt          time.Time                 `json:"updatedAt"`
+}
+type DatabaseMigrationSkip struct {
+	Database  string `json:"database"`
+	Table     string `json:"table"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Reason    string `json:"reason"`
+}
 type ColumnInfo struct {
 	Name         string  `json:"name"`
 	DatabaseType string  `json:"databaseType"`

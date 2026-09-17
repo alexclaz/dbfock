@@ -22,29 +22,32 @@ import (
 	"github.com/dbfock/database-manager/backend/internal/models"
 	"github.com/dbfock/database-manager/backend/internal/repository"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 type API struct {
-	config      config.Config
-	connections *connections.Service
-	providers   *database.Registry
-	repo        *repository.Repository
-	log         *slog.Logger
-	sessions    map[string]bool
-	sessionMu   sync.RWMutex
-	cancels     map[string]context.CancelFunc
-	cancelMu    sync.Mutex
-	querySlots  chan struct{}
-	ai          *ai.Service
-	backup      *backup.Service
-	aiSchemaMu  sync.Mutex
-	aiSchemas   map[string]cachedAISchema
+	config         config.Config
+	connections    *connections.Service
+	providers      *database.Registry
+	repo           *repository.Repository
+	log            *slog.Logger
+	sessions       map[string]bool
+	sessionMu      sync.RWMutex
+	cancels        map[string]context.CancelFunc
+	cancelMu       sync.Mutex
+	querySlots     chan struct{}
+	ai             *ai.Service
+	backup         *backup.Service
+	aiSchemaMu     sync.Mutex
+	aiSchemas      map[string]cachedAISchema
+	migrationJobMu sync.RWMutex
+	migrationJobs  map[string]models.DatabaseMigrationJob
 }
 
 var errDatabaseNotConnected = errors.New("connect to the database before running queries")
 
 func New(cfg config.Config, cs *connections.Service, providers *database.Registry, repo *repository.Repository, aiService *ai.Service, backupService *backup.Service, logger *slog.Logger) *API {
-	return &API{config: cfg, connections: cs, providers: providers, repo: repo, ai: aiService, backup: backupService, log: logger, sessions: map[string]bool{}, cancels: map[string]context.CancelFunc{}, querySlots: make(chan struct{}, cfg.MaxConcurrentQueries), aiSchemas: map[string]cachedAISchema{}}
+	return &API{config: cfg, connections: cs, providers: providers, repo: repo, ai: aiService, backup: backupService, log: logger, sessions: map[string]bool{}, cancels: map[string]context.CancelFunc{}, querySlots: make(chan struct{}, cfg.MaxConcurrentQueries), aiSchemas: map[string]cachedAISchema{}, migrationJobs: map[string]models.DatabaseMigrationJob{}}
 }
 func (a *API) Router() http.Handler {
 	r := chi.NewRouter()
@@ -109,6 +112,11 @@ func (a *API) Router() http.Handler {
 				r.Get("/databases/{database}/tables/{table}/data", a.tableData)
 				r.Post("/query", a.query)
 				r.Get("/databases/{database}/dump", a.exportDatabaseDump)
+				r.Post("/schema/compare", a.compareConnectionSchemas)
+				r.Post("/migrate/preview", a.previewConnectionMigration)
+				r.Post("/migrate/jobs", a.createMigrationJob)
+				r.Get("/migrate/jobs/{jobID}", a.getMigrationJob)
+				r.Post("/migrate", a.migrateConnectionDatabases)
 				r.Post("/databases/{database}/recreate", a.recreateDatabase)
 				r.Post("/databases/{database}/dump/import", a.importDatabaseDump)
 				r.Post("/dump/import", a.importDump)
@@ -541,6 +549,20 @@ type queryRequest struct {
 type dumpImportRequest struct {
 	SQL string `json:"sql"`
 }
+type schemaComparisonRequest struct {
+	SourceConnectionID string `json:"sourceConnectionId"`
+}
+type connectionMigrationRequest struct {
+	SourceConnectionID string   `json:"sourceConnectionId"`
+	Databases          []string `json:"databases"`
+	MaxTableSizeBytes  int64    `json:"maxTableSizeBytes"`
+	Strategy           string   `json:"strategy"`
+	TargetDatabase     string   `json:"targetDatabase"`
+	RecreateTarget     bool     `json:"recreateTarget"`
+	StructureOnly      bool     `json:"structureOnly"`
+	IgnoreDuplicates   bool     `json:"ignoreDuplicates"`
+	CreateMissing      bool     `json:"createMissingTables"`
+}
 
 type rowUpdateRequest struct {
 	Database string         `json:"database"`
@@ -854,6 +876,290 @@ func (a *API) importDump(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.repo.AddHistory(context.Background(), models.QueryHistory{ConnectionID: c.ID, SQL: "Import SQL dump", Type: "IMPORT", Status: "success", ExecutionTimeMs: result.ExecutionTimeMs, AffectedRows: result.AffectedRows})
 	respond(w, http.StatusOK, result)
+}
+
+func (a *API) connectionTooler(r *http.Request, sourceConnectionID string) (database.ConnectionTooler, models.Connection, models.Connection, error) {
+	if strings.TrimSpace(sourceConnectionID) == "" {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source connection is required")
+	}
+	target, err := a.connection(r.Context())
+	if err != nil {
+		return nil, models.Connection{}, models.Connection{}, err
+	}
+	if sourceConnectionID == target.ID {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source and target connections must be different")
+	}
+	source, err := a.connections.GetDecrypted(r.Context(), sourceConnectionID)
+	if err != nil {
+		return nil, models.Connection{}, models.Connection{}, err
+	}
+	if err = a.requireConnected(source.ID); err != nil {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source connection: %w", err)
+	}
+	if err = a.requireConnected(target.ID); err != nil {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("target connection: %w", err)
+	}
+	if source.Driver != target.Driver {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source and target drivers must match")
+	}
+	provider, err := a.providers.Get(target.Driver)
+	if err != nil {
+		return nil, models.Connection{}, models.Connection{}, err
+	}
+	tooler, ok := provider.(database.ConnectionTooler)
+	if !ok {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("connection comparison and migration are not supported by %s", target.Driver)
+	}
+	return tooler, source, target, nil
+}
+
+func (a *API) compareConnectionSchemas(w http.ResponseWriter, r *http.Request) {
+	var req schemaComparisonRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	tooler, source, target, err := a.connectionTooler(r, req.SourceConnectionID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := tooler.CompareSchemas(r.Context(), source, target)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
+func (a *API) migrateConnectionDatabases(w http.ResponseWriter, r *http.Request) {
+	var req connectionMigrationRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	if err := validateConnectionMigrationRequest(req); err != nil {
+		fail(w, err)
+		return
+	}
+	tooler, source, target, err := a.databaseMigrationTooler(r, req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if req.TargetDatabase == "" && strings.EqualFold(source.Host, target.Host) && source.Port == target.Port {
+		fail(w, fmt.Errorf("source and target migrations cannot use the same database server"))
+		return
+	}
+	// This is an explicitly confirmed bulk operation. It bypasses the regular
+	// production query staging, while still being recorded in history.
+	a.rollbackPendingTransaction(r.Context(), target.ID)
+	result, err := tooler.MigrateDatabases(r.Context(), source, target, migrationOptions(req), nil)
+	history := models.QueryHistory{ConnectionID: target.ID, SQL: fmt.Sprintf("Migrate %d database(s) from %s (%s)", len(req.Databases), source.Name, req.Strategy), Type: "IMPORT", Status: "success"}
+	if result != nil {
+		history.ExecutionTimeMs, history.AffectedRows = result.ExecutionTimeMs, result.RowsMigrated
+		if len(result.FailedTables) > 0 {
+			history.Status = "error"
+			history.ErrorMessage = fmt.Sprintf("%d table(s) could not be migrated", len(result.FailedTables))
+		}
+	}
+	if err != nil {
+		history.Status, history.ErrorMessage = "error", err.Error()
+		_ = a.repo.AddHistory(context.Background(), history)
+		fail(w, err)
+		return
+	}
+	_ = a.repo.AddHistory(context.Background(), history)
+	respond(w, http.StatusOK, result)
+}
+
+func validateConnectionMigrationRequest(req connectionMigrationRequest) error {
+	if len(req.Databases) == 0 || len(req.Databases) > 1000 {
+		return fmt.Errorf("select between 1 and 1000 databases")
+	}
+	if req.MaxTableSizeBytes <= 0 || req.MaxTableSizeBytes > 1<<40 {
+		return fmt.Errorf("maximum table size must be between 1 byte and 1 TB")
+	}
+	seen := map[string]bool{}
+	systemDatabases := map[string]bool{"information_schema": true, "mysql": true, "performance_schema": true, "sys": true}
+	for _, databaseName := range req.Databases {
+		if err := database.ValidateIdentifier(databaseName); err != nil {
+			return err
+		}
+		if systemDatabases[strings.ToLower(databaseName)] {
+			return fmt.Errorf("system database %s cannot be migrated", databaseName)
+		}
+		if seen[databaseName] {
+			return fmt.Errorf("database %s was selected more than once", databaseName)
+		}
+		seen[databaseName] = true
+	}
+	if req.TargetDatabase != "" {
+		if len(req.Databases) != 1 {
+			return fmt.Errorf("a target database can only receive one source database")
+		}
+		if err := database.ValidateIdentifier(req.TargetDatabase); err != nil {
+			return err
+		}
+		if req.Strategy != "merge" {
+			return fmt.Errorf("mapped database migrations must use merge strategy")
+		}
+	}
+	return nil
+}
+
+func migrationOptions(req connectionMigrationRequest) models.DatabaseMigrationOptions {
+	return models.DatabaseMigrationOptions{
+		Databases: req.Databases, MaxTableSizeBytes: req.MaxTableSizeBytes, Strategy: req.Strategy,
+		TargetDatabase: req.TargetDatabase, RecreateTarget: req.RecreateTarget,
+		StructureOnly: req.StructureOnly, IgnoreDuplicates: req.IgnoreDuplicates, CreateMissing: req.CreateMissing,
+	}
+}
+
+func (a *API) databaseMigrationTooler(r *http.Request, req connectionMigrationRequest) (database.ConnectionTooler, models.Connection, models.Connection, error) {
+	if req.TargetDatabase == "" {
+		return a.connectionTooler(r, req.SourceConnectionID)
+	}
+	target, err := a.connection(r.Context())
+	if err != nil {
+		return nil, models.Connection{}, models.Connection{}, err
+	}
+	source, err := a.connections.GetDecrypted(r.Context(), req.SourceConnectionID)
+	if err != nil {
+		return nil, models.Connection{}, models.Connection{}, err
+	}
+	if err = a.requireConnected(source.ID); err != nil {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source connection: %w", err)
+	}
+	if err = a.requireConnected(target.ID); err != nil {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("target connection: %w", err)
+	}
+	if source.Driver != target.Driver {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source and target drivers must match")
+	}
+	if strings.EqualFold(source.Host, target.Host) && source.Port == target.Port && strings.EqualFold(req.Databases[0], req.TargetDatabase) {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("source and target databases must be different")
+	}
+	provider, err := a.providers.Get(target.Driver)
+	if err != nil {
+		return nil, models.Connection{}, models.Connection{}, err
+	}
+	tooler, ok := provider.(database.ConnectionTooler)
+	if !ok {
+		return nil, models.Connection{}, models.Connection{}, fmt.Errorf("database migration is not supported by %s", target.Driver)
+	}
+	return tooler, source, target, nil
+}
+
+func (a *API) previewConnectionMigration(w http.ResponseWriter, r *http.Request) {
+	var req connectionMigrationRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	if err := validateConnectionMigrationRequest(req); err != nil {
+		fail(w, err)
+		return
+	}
+	tooler, source, target, err := a.databaseMigrationTooler(r, req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if req.TargetDatabase == "" && strings.EqualFold(source.Host, target.Host) && source.Port == target.Port {
+		fail(w, fmt.Errorf("source and target migrations cannot use the same database server"))
+		return
+	}
+	plan, err := tooler.PlanMigration(r.Context(), source, target, migrationOptions(req))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, plan)
+}
+
+func (a *API) createMigrationJob(w http.ResponseWriter, r *http.Request) {
+	var req connectionMigrationRequest
+	if err := decode(w, r, &req); err != nil {
+		return
+	}
+	if err := validateConnectionMigrationRequest(req); err != nil {
+		fail(w, err)
+		return
+	}
+	tooler, source, target, err := a.databaseMigrationTooler(r, req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if req.TargetDatabase == "" && strings.EqualFold(source.Host, target.Host) && source.Port == target.Port {
+		fail(w, fmt.Errorf("source and target migrations cannot use the same database server"))
+		return
+	}
+	now := time.Now()
+	job := models.DatabaseMigrationJob{ID: uuid.NewString(), SourceConnectionID: source.ID, TargetConnectionID: target.ID, Status: "running", CreatedAt: now, UpdatedAt: now}
+	a.migrationJobMu.Lock()
+	if a.migrationJobs == nil {
+		a.migrationJobs = map[string]models.DatabaseMigrationJob{}
+	}
+	for id, existing := range a.migrationJobs {
+		if existing.Status != "running" && now.Sub(existing.UpdatedAt) > time.Hour {
+			delete(a.migrationJobs, id)
+		}
+		if existing.Status == "running" && existing.TargetConnectionID == target.ID {
+			a.migrationJobMu.Unlock()
+			fail(w, fmt.Errorf("a migration is already running for this target connection"))
+			return
+		}
+	}
+	a.migrationJobs[job.ID] = job
+	a.migrationJobMu.Unlock()
+	a.rollbackPendingTransaction(r.Context(), target.ID)
+	go a.runMigrationJob(job.ID, req, tooler, source, target)
+	respond(w, http.StatusAccepted, job)
+}
+
+func (a *API) getMigrationJob(w http.ResponseWriter, r *http.Request) {
+	a.migrationJobMu.RLock()
+	job, ok := a.migrationJobs[chi.URLParam(r, "jobID")]
+	a.migrationJobMu.RUnlock()
+	if !ok || job.TargetConnectionID != chi.URLParam(r, "id") {
+		fail(w, sql.ErrNoRows)
+		return
+	}
+	respond(w, http.StatusOK, job)
+}
+
+func (a *API) runMigrationJob(id string, req connectionMigrationRequest, tooler database.ConnectionTooler, source, target models.Connection) {
+	options := migrationOptions(req)
+	result, err := tooler.MigrateDatabases(context.Background(), source, target, options, func(progress models.DatabaseMigrationProgress) {
+		a.migrationJobMu.Lock()
+		job := a.migrationJobs[id]
+		job.Progress, job.UpdatedAt = progress, time.Now()
+		a.migrationJobs[id] = job
+		a.migrationJobMu.Unlock()
+	})
+	a.migrationJobMu.Lock()
+	job := a.migrationJobs[id]
+	job.UpdatedAt = time.Now()
+	if err != nil {
+		job.Status, job.Error = "failed", err.Error()
+	} else {
+		job.Status, job.Result = "complete", result
+	}
+	a.migrationJobs[id] = job
+	a.migrationJobMu.Unlock()
+	history := models.QueryHistory{ConnectionID: target.ID, SQL: fmt.Sprintf("Background migration of %d database(s) from %s (%s)", len(req.Databases), source.Name, req.Strategy), Type: "IMPORT", Status: "success"}
+	if result != nil {
+		history.ExecutionTimeMs, history.AffectedRows = result.ExecutionTimeMs, result.RowsMigrated
+		if len(result.FailedTables) > 0 {
+			history.Status = "error"
+			history.ErrorMessage = fmt.Sprintf("%d table(s) could not be migrated", len(result.FailedTables))
+		}
+	}
+	if err != nil {
+		history.Status, history.ErrorMessage = "error", err.Error()
+	}
+	if a.repo != nil {
+		_ = a.repo.AddHistory(context.Background(), history)
+	}
 }
 
 // exportDatabaseDump streams the dump instead of buffering it, so the response

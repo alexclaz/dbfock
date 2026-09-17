@@ -4,14 +4,14 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 type SelectValue = string | number
 type SelectOption = { value: SelectValue; label: string; disabled?: boolean }
 
-const props = withDefaults(defineProps<{ modelValue: SelectValue[]; options: SelectOption[]; placeholder?: string }>(), { placeholder: 'Select options' })
+const props = withDefaults(defineProps<{ modelValue: SelectValue[]; options: SelectOption[]; placeholder?: string; disabled?: boolean }>(), { placeholder: 'Select options', disabled: false })
 const emit = defineEmits<{ 'update:modelValue': [value: SelectValue[]] }>()
 const root = ref<HTMLElement>()
 const open = ref(false)
 
 function isSelected(value: SelectValue) { return props.modelValue.includes(value) }
 function toggle(option: SelectOption) {
-  if (option.disabled) return
+  if (option.disabled || props.disabled) return
   emit('update:modelValue', isSelected(option.value) ? props.modelValue.filter((value) => value !== option.value) : [...props.modelValue, option.value])
 }
 function label() {
@@ -27,7 +27,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', closeOnOutsideCl
 
 <template>
   <div ref="root" class="relative">
-    <button type="button" class="app-select" :aria-expanded="open" aria-haspopup="listbox" @click="open = !open"><span class="truncate">{{ label() }}</span><Icon name="lucide:chevron-down" class="h-4 w-4 shrink-0 text-muted transition-transform" :class="open ? 'rotate-180' : ''" aria-hidden="true" /></button>
+    <button type="button" class="app-select disabled:cursor-not-allowed disabled:opacity-50" :disabled="disabled" :aria-expanded="open" aria-haspopup="listbox" @click="open = !open"><span class="truncate">{{ label() }}</span><Icon name="lucide:chevron-down" class="h-4 w-4 shrink-0 text-muted transition-transform" :class="open ? 'rotate-180' : ''" aria-hidden="true" /></button>
     <Transition name="select-menu"><div v-if="open" class="app-select-menu" role="listbox" aria-multiselectable="true"><label v-for="option in options" :key="String(option.value)" class="app-select-option cursor-pointer" :class="option.disabled ? 'cursor-not-allowed opacity-50' : ''"><span class="flex min-w-0 items-center gap-2"><input type="checkbox" :checked="isSelected(option.value)" :disabled="option.disabled" class="accent-[var(--accent)]" @change="toggle(option)"><span class="truncate">{{ option.label }}</span></span></label></div></Transition>
   </div>
 </template>

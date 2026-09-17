@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import type { DatabaseInfo, QueryResult, SchemaDiagram, TableInfo, TableStructure } from '~/types/database'
-import { tableInsertStatements } from '~/utils/tableTransfer'
+import type { DatabaseInfo, DatabaseMigrationJob, QueryResult, SchemaDiagram, TableInfo } from '~/types/database'
 
 type DatabaseSection = 'tables' | 'diagram' | 'tools'
 type DatabaseToolsSection = 'export' | 'import' | 'migration' | 'maintenance' | 'danger'
@@ -34,6 +33,7 @@ const toolsSection = ref<DatabaseToolsSection>('export')
 const sourceDatabases = ref<DatabaseInfo[]>([])
 const sourceLoading = ref(false)
 const migrating = ref(false)
+const migrationJob = ref<DatabaseMigrationJob>()
 const source = reactive({ connectionId: '', database: '' })
 const migrationOptions = reactive({ recreateTarget: false, ignoreDuplicates: false, structureOnly: false })
 const showRecreateConfirmation = ref(false)
@@ -43,8 +43,10 @@ const showCreateTable = ref(false)
 const creatingTable = ref(false)
 const newTable = reactive<{ name: string; columns: NewTableColumn[] }>({ name: '', columns: [] })
 let nextNewColumnId = 1
+let migrationPollTimer: ReturnType<typeof setTimeout> | undefined
 
 function messageFor(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
+function migrationStorageKey() { return `dbfock.databaseMigration.${props.connectionId}.${props.database}` }
 
 const filteredTables = computed(() => {
   const list = tables.value ?? []
@@ -69,13 +71,6 @@ async function loadDiagram() {
 function tableNameSQL(table: string) { return `\`${props.database.replaceAll('`', '``')}\`.\`${table.replaceAll('`', '``')}\`` }
 function databaseNameSQL(name = props.database) { return `\`${name.replaceAll('`', '``')}\`` }
 function identifierSQL(name: string) { return `\`${name.replaceAll('`', '``')}\`` }
-function sourceTablePath(table: string, suffix: 'structure' | 'data') { return `/connections/${source.connectionId}/databases/${encodeURIComponent(source.database)}/tables/${encodeURIComponent(table)}/${suffix}` }
-function createTableSQL(ddl: string, table: string) {
-  const name = tableNameSQL(table)
-  const created = ddl.replace(/^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:`(?:``|[^`])+`\.)?`(?:``|[^`])+`/i, `CREATE TABLE IF NOT EXISTS ${name}`)
-  if (created === ddl) throw new Error(t('database.tools.migrationCreateError', { table }))
-  return created
-}
 async function exportDatabase() {
   if (exporting.value) return
   exporting.value = true
@@ -122,64 +117,48 @@ async function migrateDatabase() {
   if (source.connectionId === props.connectionId && source.database === props.database) { notifyError(t('database.tools.migrationSameDatabase')); return }
   migrating.value = true
   try {
-    const sourceTables = await api<TableInfo[]>(`/connections/${source.connectionId}/databases/${encodeURIComponent(source.database)}/tables`)
-    if (!sourceTables.length) throw new Error(t('database.tools.noSourceTables'))
-    // Recreating the whole schema is what makes the drop safe: tables that
-    // reference each other cannot be dropped individually.
-    if (migrationOptions.recreateTarget) {
-      await api(`/connections/${props.connectionId}/databases/${encodeURIComponent(props.database)}/recreate`, { method: 'POST' })
-      tables.value = []
-      diagram.value = undefined
-    }
-    const structures = new Map<string, TableStructure>()
-    for (const table of sourceTables) structures.set(table.name, await api<TableStructure>(sourceTablePath(table.name, 'structure')))
-
-    const pending = [...sourceTables]
-    let lastError: unknown
-    while (pending.length) {
-      let created = 0
-      for (let index = pending.length - 1; index >= 0; index--) {
-        const table = pending[index]!
-        try {
-          await api(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql: createTableSQL(structures.get(table.name)!.ddl, table.name), historySql: `Create ${props.database}.${table.name} during database migration`, disableForeignKeyChecks: true } })
-          pending.splice(index, 1)
-          created++
-        } catch (cause: unknown) { lastError = cause }
-      }
-      if (!created) throw lastError instanceof Error ? lastError : new Error(t('database.tools.migrationCreateError', { table: pending[0]?.name ?? '' }))
-    }
-
-    if (migrationOptions.structureOnly) {
-      await load()
-      notifySuccess(t('database.tools.migrationStructureSuccess', { count: sourceTables.length }))
-      return
-    }
-
-    let migratedRows = 0
-    for (const table of sourceTables) {
-      const targetStructure = await api<TableStructure>(`/connections/${props.connectionId}/databases/${encodeURIComponent(props.database)}/tables/${encodeURIComponent(table.name)}/structure`)
-      const allowedColumns = new Set(targetStructure.columns.map((column) => column.name))
-      const columnTypes = Object.fromEntries(targetStructure.columns.map((column) => [column.name, column.databaseType]))
-      let columns: string[] = []
-      let offset = 0
-      let hasMore = true
-      while (hasMore) {
-        const page = await api<QueryResult>(`${sourceTablePath(table.name, 'data')}?limit=100&offset=${offset}`)
-        if (!columns.length) columns = page.columns.map((column) => column.name).filter((column) => allowedColumns.has(column))
-        if (columns.length) for (const sql of tableInsertStatements(props.database, table.name, columns, page.rows.map((row) => columns.map((column) => row[column])), 80_000, columnTypes, migrationOptions.ignoreDuplicates)) {
-          const result = await api<QueryResult>(`/connections/${props.connectionId}/query`, { method: 'POST', body: { sql, historySql: `Migrate ${source.database}.${table.name} into ${props.database}.${table.name}`, disableForeignKeyChecks: true } })
-          migratedRows += result.affectedRows
-          if (result.transactionPending) emit('transactionStatus', props.connectionId, result.transactionPending, result.pendingStatements)
-        }
-        offset += page.rows.length
-        hasMore = page.hasMore
-      }
-    }
-    await load()
-    notifySuccess(t('database.tools.migrationSuccess', { count: migratedRows }))
-  } catch (cause: unknown) { notifyError(messageFor(cause)) }
-  finally { migrating.value = false }
+    migrationJob.value = await api<DatabaseMigrationJob>(`/connections/${props.connectionId}/migrate/jobs`, { method: 'POST', body: {
+      sourceConnectionId: source.connectionId,
+      databases: [source.database],
+      targetDatabase: props.database,
+      maxTableSizeBytes: 1_099_511_627_776,
+      strategy: 'merge',
+      recreateTarget: migrationOptions.recreateTarget,
+      structureOnly: migrationOptions.structureOnly,
+      ignoreDuplicates: migrationOptions.ignoreDuplicates,
+    } })
+    if (import.meta.client) localStorage.setItem(migrationStorageKey(), migrationJob.value.id)
+    scheduleMigrationPoll()
+  } catch (cause: unknown) { migrating.value = false; notifyError(messageFor(cause)) }
 }
+function scheduleMigrationPoll() {
+  if (migrationPollTimer) clearTimeout(migrationPollTimer)
+  migrationPollTimer = setTimeout(() => void pollMigration(), 750)
+}
+async function pollMigration() {
+  const jobId = migrationJob.value?.id || (import.meta.client ? localStorage.getItem(migrationStorageKey()) : '')
+  if (!jobId) return
+  try {
+    const job = await api<DatabaseMigrationJob>(`/connections/${props.connectionId}/migrate/jobs/${jobId}`)
+    migrationJob.value = job
+    if (job.status === 'running') { scheduleMigrationPoll(); return }
+    if (import.meta.client) localStorage.removeItem(migrationStorageKey())
+    migrating.value = false
+    await load()
+    diagram.value = undefined
+    if (job.status === 'failed') { notifyError(job.error || 'Migration failed'); return }
+    const result = job.result!
+    if (result.failedTables.length) notifyError(t('connectionTools.migrationPartial', { migrated: result.tablesMigrated, failed: result.failedTables.length }))
+    else if (migrationOptions.structureOnly) notifySuccess(t('database.tools.migrationStructureSuccess', { count: result.tablesMigrated }))
+    else notifySuccess(t('database.tools.migrationSuccess', { count: result.rowsMigrated }))
+  } catch { scheduleMigrationPoll() }
+}
+const migrationProgressPercent = computed(() => {
+  const progress = migrationJob.value?.progress
+  if (!progress?.totalTables) return 0
+  const currentFraction = progress.currentTableEstimatedRows > 0 ? Math.min(1, progress.currentTableRows / progress.currentTableEstimatedRows) : 0
+  return Math.min(migrationJob.value?.status === 'running' ? 99 : 100, Math.round((progress.completedTables + currentFraction) / progress.totalTables * 100))
+})
 function requestMigration() {
   if (migrationOptions.recreateTarget) { showRecreateConfirmation.value = true; return }
   void migrateDatabase()
@@ -267,8 +246,12 @@ function focusTableFilter(event: KeyboardEvent) {
 }
 
 onActivated(() => { isActive.value = true; window.addEventListener('keydown', focusTableFilter); focusTableFilterInput() })
+onMounted(() => { if (localStorage.getItem(migrationStorageKey())) { migrating.value = true; void pollMigration() } })
 onDeactivated(() => { isActive.value = false; window.removeEventListener('keydown', focusTableFilter) })
-onBeforeUnmount(() => window.removeEventListener('keydown', focusTableFilter))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', focusTableFilter)
+  if (migrationPollTimer) clearTimeout(migrationPollTimer)
+})
 watch(() => [props.connectionId, props.database], () => { load(); diagram.value = undefined; if (section.value === 'diagram') void loadDiagram() }, { immediate: true })
 watch(() => props.activeSection, (next) => {
   if (!next || next === section.value) return
@@ -338,7 +321,19 @@ watch(() => source.connectionId, async (connectionId) => {
         <div class="min-w-0 flex-1 pb-8">
           <section v-if="toolsSection === 'export'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('database.tools.exportTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.exportDescription') }}</p><label class="mt-5 flex items-start gap-3 text-sm"><input v-model="exportStructureOnly" class="mt-0.5" type="checkbox" :disabled="exporting"><span><span class="font-medium">{{ t('database.tools.exportStructureOnly') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.exportStructureOnlyDescription') }}</span></span></label><button type="button" class="mt-5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="exporting" @click="exportDatabase">{{ exporting ? t('database.tools.exporting') : t('database.tools.export') }}</button></section>
           <section v-else-if="toolsSection === 'import'" class="max-w-xl"><h3 class="text-base font-semibold">{{ t('database.tools.importTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.importDescription', { database }) }}</p><input ref="dumpInput" class="sr-only" type="file" accept=".sql,application/sql,text/plain" @change="requestDumpImport"><button type="button" class="mt-5 flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="importingDump" @click="dumpInput?.click()"><Icon name="lucide:upload" class="h-4 w-4" aria-hidden="true" />{{ importingDump ? t('database.tools.importing') : t('database.tools.import') }}</button></section>
-          <section v-else-if="toolsSection === 'migration'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('database.tools.migrationTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.migrationDescription', { database }) }}</p><div class="mt-6 grid gap-3 md:grid-cols-2"><label class="grid gap-1.5 text-sm font-medium">{{ t('database.tools.sourceConnection') }}<AppSelect v-model="source.connectionId" :options="sourceConnectionOptions" :disabled="migrating" :placeholder="t('database.tools.chooseConnection')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('database.tools.sourceDatabase') }}<AppSelect v-model="source.database" :options="sourceDatabaseOptions" :disabled="migrating || sourceLoading || !source.connectionId" :placeholder="t('database.tools.chooseDatabase')" /></label></div><div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.recreateTarget" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('database.tools.recreateTarget') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.recreateTargetDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.structureOnly" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('database.tools.migrationStructureOnly') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.migrationStructureOnlyDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm" :class="migrationOptions.structureOnly ? 'opacity-50' : ''"><input v-model="migrationOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="migrating || migrationOptions.structureOnly" ><span><span class="font-medium">{{ t('database.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.ignoreDuplicatesDescription') }}</span></span></label></div><button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="migrating || sourceLoading || !source.database" @click="requestMigration">{{ migrating ? t('database.tools.migrating') : t('database.tools.migrate') }}</button></section>
+          <section v-else-if="toolsSection === 'migration'" class="max-w-3xl">
+            <h3 class="text-base font-semibold">{{ t('database.tools.migrationTitle') }}</h3>
+            <p class="mt-1 text-sm text-muted">{{ t('database.tools.migrationDescription', { database }) }}</p>
+            <div class="mt-6 grid gap-3 md:grid-cols-2"><label class="grid gap-1.5 text-sm font-medium">{{ t('database.tools.sourceConnection') }}<AppSelect v-model="source.connectionId" :options="sourceConnectionOptions" :disabled="migrating" :placeholder="t('database.tools.chooseConnection')" /></label><label class="grid gap-1.5 text-sm font-medium">{{ t('database.tools.sourceDatabase') }}<AppSelect v-model="source.database" :options="sourceDatabaseOptions" :disabled="migrating || sourceLoading || !source.connectionId" :placeholder="t('database.tools.chooseDatabase')" /></label></div>
+            <div class="mt-5 grid gap-3"><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.recreateTarget" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('database.tools.recreateTarget') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.recreateTargetDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm"><input v-model="migrationOptions.structureOnly" class="mt-0.5" type="checkbox" :disabled="migrating" ><span><span class="font-medium">{{ t('database.tools.migrationStructureOnly') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.migrationStructureOnlyDescription') }}</span></span></label><label class="flex items-start gap-3 text-sm" :class="migrationOptions.structureOnly ? 'opacity-50' : ''"><input v-model="migrationOptions.ignoreDuplicates" class="mt-0.5" type="checkbox" :disabled="migrating || migrationOptions.structureOnly" ><span><span class="font-medium">{{ t('database.tools.ignoreDuplicates') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('database.tools.ignoreDuplicatesDescription') }}</span></span></label></div>
+            <div v-if="migrationJob" class="mt-5 rounded-md border border-line bg-canvas p-3 text-sm">
+              <div class="flex items-center justify-between gap-3"><span>{{ t('connectionTools.progressSummary', { completed: migrationJob.progress.completedTables, total: migrationJob.progress.totalTables, rows: migrationJob.progress.rowsMigrated }) }}</span><span class="font-medium">{{ migrationProgressPercent }}%</span></div>
+              <div class="mt-2 h-2 overflow-hidden rounded-full bg-line"><div class="h-full rounded-full bg-accent transition-all" :style="{ width: `${migrationProgressPercent}%` }" /></div>
+              <p v-if="migrationJob.status === 'running' && migrationJob.progress.currentTable" class="mt-2 font-mono text-xs text-muted">{{ migrationJob.progress.currentDatabase }}.{{ migrationJob.progress.currentTable }}</p>
+              <details v-if="migrationJob.result?.failedTables.length" class="mt-3"><summary class="cursor-pointer text-rose-600">{{ t('connectionTools.failedTables', { count: migrationJob.result.failedTables.length }) }}</summary><ul class="mt-2 grid gap-2 text-xs"><li v-for="failure in migrationJob.result.failedTables" :key="`${failure.database}.${failure.table}`"><span class="font-mono">{{ failure.database }}.{{ failure.table }}</span><span class="block text-muted">{{ failure.error }}</span></li></ul></details>
+            </div>
+            <button type="button" class="mt-6 rounded-md bg-accent px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="migrating || sourceLoading || !source.database" @click="requestMigration">{{ migrating ? t('database.tools.migrating') : t('database.tools.migrate') }}</button>
+          </section>
           <section v-else-if="toolsSection === 'maintenance'" class="max-w-3xl"><h3 class="text-base font-semibold">{{ t('database.tools.maintenanceTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.maintenanceDescription') }}</p><div class="mt-5 flex flex-wrap gap-2"><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('check')">{{ maintenanceRunning === 'check' ? t('database.tools.running') : t('database.tools.check') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('analyze')">{{ maintenanceRunning === 'analyze' ? t('database.tools.running') : t('database.tools.analyze') }}</button><button type="button" class="rounded-md border border-line px-3 py-2 text-sm hover:bg-canvas disabled:opacity-50" :disabled="Boolean(maintenanceRunning)" @click="runMaintenance('repair')">{{ maintenanceRunning === 'repair' ? t('database.tools.running') : t('database.tools.repair') }}</button></div><div v-if="maintenanceResult?.columns.length" class="scrollbar mt-5 overflow-auto rounded-md border border-line"><table class="min-w-full text-left text-xs"><thead class="bg-canvas text-muted"><tr><th v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2 font-medium">{{ column.name }}</th></tr></thead><tbody><tr v-for="(row, index) in maintenanceResult.rows" :key="index" class="border-t border-line"><td v-for="column in maintenanceResult.columns" :key="column.name" class="px-3 py-2">{{ row[column.name] }}</td></tr></tbody></table></div></section>
           <section v-else class="max-w-xl"><h3 class="text-base font-semibold text-rose-600">{{ t('database.tools.deleteTitle') }}</h3><p class="mt-1 text-sm text-muted">{{ t('database.tools.deleteDescription', { database }) }}</p><button type="button" class="mt-5 rounded-md border border-rose-500/40 px-3 py-2 text-sm text-rose-600 hover:bg-rose-500/10 disabled:opacity-50" :disabled="deletingDatabase" @click="showDeleteConfirmation = true">{{ deletingDatabase ? t('database.tools.deleting') : t('database.tools.delete') }}</button></section>
         </div>

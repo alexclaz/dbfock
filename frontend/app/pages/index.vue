@@ -71,7 +71,7 @@ const smartQueryErrorConnectionId = ref<string>()
 const activeQueries = new Map<string, ActiveQuery>()
 const queryGenerations = new Map<string, number>()
 
-const activeTab = computed<WorkspaceTab>(() => workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0] ?? { id: 'empty', title: '', type: 'empty' })
+const activeTab = computed<WorkspaceTab>(() => workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? { id: 'empty', title: '', type: 'empty' })
 const activeResultTabs = computed(() => resultTabs[activeTab.value.id] || [])
 const activeResultTab = computed(() => activeResultTabs.value.find((tab) => tab.id === activeResultTabIds[activeTab.value.id]))
 const activeResultSummary = computed(() => activeResultTab.value?.result ? `${t('query.rows', { count: `${activeResultTab.value.result.rowCount}${activeResultTab.value.result.hasMore ? '+' : ''}` })} · ${activeResultTab.value.result.executionTimeMs} ms · ${t('query.affected', { count: activeResultTab.value.result.affectedRows })}` : t('query.results'))

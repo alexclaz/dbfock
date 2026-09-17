@@ -267,10 +267,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     for (const id of closableIds) refreshTabContent(id)
 
     const activeIndex = tabs.value.findIndex((tab) => tab.id === activeTabId.value)
+    const activeTab = tabs.value[activeIndex]
     const activeWasClosed = closableIds.has(activeTabId.value)
+    // A connection keeps its own tab context. Do not activate a hidden tab
+    // from another connection when the last tab in this context is closed.
+    const belongsToActiveContext = (tab: WorkspaceTab) => activeTab?.connectionId
+      ? tab.connectionId === activeTab.connectionId
+      : !tab.connectionId
     const fallbackTabId = activeIndex < 0
       ? tabs.value.find((tab) => !closableIds.has(tab.id))?.id || ''
-      : [...tabs.value.slice(0, activeIndex)].reverse().find((tab) => !closableIds.has(tab.id))?.id || tabs.value.slice(activeIndex + 1).find((tab) => !closableIds.has(tab.id))?.id || ''
+      : [...tabs.value.slice(0, activeIndex)].reverse().find((tab) => !closableIds.has(tab.id) && belongsToActiveContext(tab))?.id
+        || tabs.value.slice(activeIndex + 1).find((tab) => !closableIds.has(tab.id) && belongsToActiveContext(tab))?.id
+        || ''
     const remainingTabs = tabs.value.filter((tab) => !closableIds.has(tab.id))
     if (!remainingTabs.length) {
       tabs.value = []

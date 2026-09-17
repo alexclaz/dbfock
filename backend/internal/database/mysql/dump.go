@@ -177,7 +177,8 @@ func sqlLiteral(value any, databaseType string) string {
 
 func isBinaryType(databaseType string) bool {
 	switch strings.ToUpper(databaseType) {
-	case "BINARY", "VARBINARY", "BLOB", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB", "BIT", "GEOMETRY":
+	case "BINARY", "VARBINARY", "BLOB", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB", "BIT",
+		"GEOMETRY", "POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION":
 		return true
 	}
 	return false

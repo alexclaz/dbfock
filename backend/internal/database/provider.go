@@ -90,6 +90,15 @@ type DatabaseRecreator interface {
 	RecreateDatabase(context.Context, models.Connection, string) (*models.QueryResult, error)
 }
 
+// ConnectionTooler performs server-to-server operations without routing table
+// contents through the browser. Implementations must stream/batch row copying
+// so memory use stays bounded for large databases.
+type ConnectionTooler interface {
+	CompareSchemas(context.Context, models.Connection, models.Connection) (*models.SchemaComparison, error)
+	PlanMigration(context.Context, models.Connection, models.Connection, models.DatabaseMigrationOptions) (*models.DatabaseMigrationPlan, error)
+	MigrateDatabases(context.Context, models.Connection, models.Connection, models.DatabaseMigrationOptions, func(models.DatabaseMigrationProgress)) (*models.DatabaseMigrationResult, error)
+}
+
 type Registry struct{ providers map[string]Provider }
 
 func NewRegistry() *Registry                                  { return &Registry{providers: map[string]Provider{}} }

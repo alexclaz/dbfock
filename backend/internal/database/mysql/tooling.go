@@ -191,6 +191,25 @@ type migrationColumn struct {
 	dataType   string
 }
 
+func migrationTableMatches(source, target migrationTable) bool {
+	return source.sizeBytes == target.sizeBytes && source.estimatedRows == target.estimatedRows
+}
+
+func migrationSelectionKey(databaseName, tableName string) string {
+	return databaseName + "\x00" + tableName
+}
+
+func selectedMigrationTables(options models.DatabaseMigrationOptions) map[string]bool {
+	if len(options.SelectedTables) == 0 {
+		return nil
+	}
+	selected := make(map[string]bool, len(options.SelectedTables))
+	for _, table := range options.SelectedTables {
+		selected[migrationSelectionKey(table.Database, table.Table)] = true
+	}
+	return selected
+}
+
 func validateMigrationOptions(options models.DatabaseMigrationOptions) error {
 	if options.Strategy != "drop_recreate" && options.Strategy != "truncate_insert" && options.Strategy != "merge" {
 		return fmt.Errorf("unsupported migration strategy")
@@ -228,14 +247,12 @@ func (p *Provider) PlanMigration(ctx context.Context, source, target models.Conn
 		return nil, err
 	}
 	defer sourceDB.Close()
-	var targetDB *sql.DB
-	if options.Strategy == "truncate_insert" && !options.CreateMissing {
-		targetDB, err = p.open(target)
-		if err != nil {
-			return nil, err
-		}
-		defer targetDB.Close()
+	targetDB, err := p.open(target)
+	if err != nil {
+		return nil, err
 	}
+	defer targetDB.Close()
+	selectedTables := selectedMigrationTables(options)
 	plan := &models.DatabaseMigrationPlan{Databases: len(options.Databases), Tables: []models.DatabaseMigrationTable{}, SkippedTables: []models.DatabaseMigrationSkip{}}
 	for _, databaseName := range options.Databases {
 		var databaseCount int
@@ -249,22 +266,31 @@ func (p *Provider) PlanMigration(ctx context.Context, source, target models.Conn
 		if listErr != nil {
 			return nil, fmt.Errorf("list tables in %s: %w", databaseName, listErr)
 		}
-		var existingTargetTables map[string]bool
-		if targetDB != nil {
-			existingTargetTables, err = migrationExistingTables(ctx, targetDB, migrationTargetDatabase(options, databaseName))
-			if err != nil {
-				return nil, fmt.Errorf("list target tables in %s: %w", databaseName, err)
-			}
+		targetTables, targetErr := migrationTargetTables(ctx, targetDB, migrationTargetDatabase(options, databaseName))
+		if targetErr != nil {
+			return nil, fmt.Errorf("list target tables in %s: %w", databaseName, targetErr)
 		}
 		for _, table := range tables {
-			if existingTargetTables != nil && !existingTargetTables[table.name] {
+			if selectedTables != nil && !selectedTables[migrationSelectionKey(databaseName, table.name)] {
+				continue
+			}
+			targetTable, targetExists := targetTables[table.name]
+			if options.Strategy == "truncate_insert" && !options.CreateMissing && !targetExists {
+				continue
+			}
+			if options.SkipMatching && !options.RecreateTarget && targetExists && migrationTableMatches(table, targetTable) {
 				continue
 			}
 			if table.sizeBytes > options.MaxTableSizeBytes {
 				plan.SkippedTables = append(plan.SkippedTables, models.DatabaseMigrationSkip{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, Reason: "size_limit"})
 				continue
 			}
-			plan.Tables = append(plan.Tables, models.DatabaseMigrationTable{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, EstimatedRows: table.estimatedRows})
+			plannedTable := models.DatabaseMigrationTable{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, EstimatedRows: table.estimatedRows}
+			if targetExists {
+				targetSize := targetTable.sizeBytes
+				plannedTable.TargetSizeBytes = &targetSize
+			}
+			plan.Tables = append(plan.Tables, plannedTable)
 			plan.EstimatedRows += table.estimatedRows
 			plan.TotalSizeBytes += table.sizeBytes
 		}
@@ -314,6 +340,7 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 
 	result := &models.DatabaseMigrationResult{SkippedTables: []models.DatabaseMigrationSkip{}, FailedTables: []models.DatabaseMigrationFailure{}}
 	tablesByDatabase := make(map[string][]migrationTable, len(options.Databases))
+	selectedTables := selectedMigrationTables(options)
 	totalTables := 0
 	for _, databaseName := range options.Databases {
 		var databaseCount int
@@ -327,15 +354,22 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 		if listErr != nil {
 			return nil, fmt.Errorf("list tables in %s: %w", databaseName, listErr)
 		}
-		var existingTargetTables map[string]bool
-		if options.Strategy == "truncate_insert" && !options.CreateMissing {
-			existingTargetTables, err = migrationExistingTables(ctx, targetDB, migrationTargetDatabase(options, databaseName))
+		var targetTables map[string]migrationTable
+		if (options.Strategy == "truncate_insert" && !options.CreateMissing) || (options.SkipMatching && !options.RecreateTarget) {
+			targetTables, err = migrationTargetTables(ctx, targetDB, migrationTargetDatabase(options, databaseName))
 			if err != nil {
 				return nil, fmt.Errorf("list target tables in %s: %w", databaseName, err)
 			}
 		}
 		for _, table := range tables {
-			if existingTargetTables != nil && !existingTargetTables[table.name] {
+			if selectedTables != nil && !selectedTables[migrationSelectionKey(databaseName, table.name)] {
+				continue
+			}
+			targetTable, targetExists := targetTables[table.name]
+			if options.Strategy == "truncate_insert" && !options.CreateMissing && !targetExists {
+				continue
+			}
+			if options.SkipMatching && !options.RecreateTarget && targetExists && migrationTableMatches(table, targetTable) {
 				continue
 			}
 			if table.sizeBytes > options.MaxTableSizeBytes {
@@ -463,19 +497,19 @@ func migrationTables(ctx context.Context, db *sql.DB, databaseName string) ([]mi
 	return result, rows.Err()
 }
 
-func migrationExistingTables(ctx context.Context, db *sql.DB, databaseName string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE'`, databaseName)
+func migrationTargetTables(ctx context.Context, db *sql.DB, databaseName string) (map[string]migrationTable, error) {
+	rows, err := db.QueryContext(ctx, `SELECT table_name, COALESCE(data_length, 0), COALESCE(table_rows, 0) FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE'`, databaseName)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	result := map[string]bool{}
+	result := map[string]migrationTable{}
 	for rows.Next() {
-		var tableName string
-		if err = rows.Scan(&tableName); err != nil {
+		var table migrationTable
+		if err = rows.Scan(&table.name, &table.sizeBytes, &table.estimatedRows); err != nil {
 			return nil, err
 		}
-		result[tableName] = true
+		result[table.name] = table
 	}
 	return result, rows.Err()
 }

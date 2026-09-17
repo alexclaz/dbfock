@@ -553,15 +553,17 @@ type schemaComparisonRequest struct {
 	SourceConnectionID string `json:"sourceConnectionId"`
 }
 type connectionMigrationRequest struct {
-	SourceConnectionID string   `json:"sourceConnectionId"`
-	Databases          []string `json:"databases"`
-	MaxTableSizeBytes  int64    `json:"maxTableSizeBytes"`
-	Strategy           string   `json:"strategy"`
-	TargetDatabase     string   `json:"targetDatabase"`
-	RecreateTarget     bool     `json:"recreateTarget"`
-	StructureOnly      bool     `json:"structureOnly"`
-	IgnoreDuplicates   bool     `json:"ignoreDuplicates"`
-	CreateMissing      bool     `json:"createMissingTables"`
+	SourceConnectionID string                              `json:"sourceConnectionId"`
+	Databases          []string                            `json:"databases"`
+	MaxTableSizeBytes  int64                               `json:"maxTableSizeBytes"`
+	Strategy           string                              `json:"strategy"`
+	TargetDatabase     string                              `json:"targetDatabase"`
+	RecreateTarget     bool                                `json:"recreateTarget"`
+	StructureOnly      bool                                `json:"structureOnly"`
+	IgnoreDuplicates   bool                                `json:"ignoreDuplicates"`
+	CreateMissing      bool                                `json:"createMissingTables"`
+	SkipMatching       bool                                `json:"skipMatchingTables"`
+	SelectedTables     []models.DatabaseMigrationSelection `json:"selectedTables"`
 }
 
 type rowUpdateRequest struct {
@@ -1003,6 +1005,17 @@ func validateConnectionMigrationRequest(req connectionMigrationRequest) error {
 			return fmt.Errorf("mapped database migrations must use merge strategy")
 		}
 	}
+	if len(req.SelectedTables) > 100000 {
+		return fmt.Errorf("too many selected tables")
+	}
+	for _, table := range req.SelectedTables {
+		if !seen[table.Database] {
+			return fmt.Errorf("selected table database %s was not selected", table.Database)
+		}
+		if err := database.ValidateIdentifier(table.Table); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1010,7 +1023,8 @@ func migrationOptions(req connectionMigrationRequest) models.DatabaseMigrationOp
 	return models.DatabaseMigrationOptions{
 		Databases: req.Databases, MaxTableSizeBytes: req.MaxTableSizeBytes, Strategy: req.Strategy,
 		TargetDatabase: req.TargetDatabase, RecreateTarget: req.RecreateTarget,
-		StructureOnly: req.StructureOnly, IgnoreDuplicates: req.IgnoreDuplicates, CreateMissing: req.CreateMissing,
+		StructureOnly: req.StructureOnly, IgnoreDuplicates: req.IgnoreDuplicates,
+		CreateMissing: req.CreateMissing, SkipMatching: req.SkipMatching, SelectedTables: req.SelectedTables,
 	}
 }
 

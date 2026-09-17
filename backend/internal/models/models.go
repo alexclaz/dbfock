@@ -187,14 +187,20 @@ type ColumnSchemaDifference struct {
 }
 
 type DatabaseMigrationOptions struct {
-	Databases         []string `json:"databases"`
-	MaxTableSizeBytes int64    `json:"maxTableSizeBytes"`
-	Strategy          string   `json:"strategy"`
-	TargetDatabase    string   `json:"targetDatabase,omitempty"`
-	RecreateTarget    bool     `json:"recreateTarget,omitempty"`
-	StructureOnly     bool     `json:"structureOnly,omitempty"`
-	IgnoreDuplicates  bool     `json:"ignoreDuplicates,omitempty"`
-	CreateMissing     bool     `json:"createMissingTables,omitempty"`
+	Databases         []string                     `json:"databases"`
+	MaxTableSizeBytes int64                        `json:"maxTableSizeBytes"`
+	Strategy          string                       `json:"strategy"`
+	TargetDatabase    string                       `json:"targetDatabase,omitempty"`
+	RecreateTarget    bool                         `json:"recreateTarget,omitempty"`
+	StructureOnly     bool                         `json:"structureOnly,omitempty"`
+	IgnoreDuplicates  bool                         `json:"ignoreDuplicates,omitempty"`
+	CreateMissing     bool                         `json:"createMissingTables,omitempty"`
+	SkipMatching      bool                         `json:"skipMatchingTables,omitempty"`
+	SelectedTables    []DatabaseMigrationSelection `json:"selectedTables,omitempty"`
+}
+type DatabaseMigrationSelection struct {
+	Database string `json:"database"`
+	Table    string `json:"table"`
 }
 type DatabaseMigrationPlan struct {
 	Databases      int                      `json:"databases"`
@@ -204,10 +210,11 @@ type DatabaseMigrationPlan struct {
 	TotalSizeBytes int64                    `json:"totalSizeBytes"`
 }
 type DatabaseMigrationTable struct {
-	Database      string `json:"database"`
-	Table         string `json:"table"`
-	SizeBytes     int64  `json:"sizeBytes"`
-	EstimatedRows int64  `json:"estimatedRows"`
+	Database        string `json:"database"`
+	Table           string `json:"table"`
+	SizeBytes       int64  `json:"sizeBytes"`
+	TargetSizeBytes *int64 `json:"targetSizeBytes,omitempty"`
+	EstimatedRows   int64  `json:"estimatedRows"`
 }
 type DatabaseMigrationResult struct {
 	DatabasesMigrated int                        `json:"databasesMigrated"`

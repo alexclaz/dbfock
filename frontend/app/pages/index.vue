@@ -302,9 +302,11 @@ const canGoForward = computed(() => {
 })
 function goBack() {
   const id = workspace.activeTabId
-  if ((navigatorHistoryIndex[id] ?? 0) > 0) {
-    navigatorHistoryIndex[id] -= 1
-    const tab = navigatorHistory[id]?.[navigatorHistoryIndex[id]]
+  const currentIndex = navigatorHistoryIndex[id] ?? 0
+  if (currentIndex > 0) {
+    const nextIndex = currentIndex - 1
+    navigatorHistoryIndex[id] = nextIndex
+    const tab = navigatorHistory[id]?.[nextIndex]
     if (tab) showNavigatorSnapshot(id, tab)
     return
   }
@@ -312,9 +314,11 @@ function goBack() {
 function goForward() {
   const id = workspace.activeTabId
   const history = navigatorHistory[id] || []
-  if ((navigatorHistoryIndex[id] ?? -1) < history.length - 1) {
-    navigatorHistoryIndex[id] += 1
-    const tab = history[navigatorHistoryIndex[id]]
+  const currentIndex = navigatorHistoryIndex[id] ?? -1
+  if (currentIndex < history.length - 1) {
+    const nextIndex = currentIndex + 1
+    navigatorHistoryIndex[id] = nextIndex
+    const tab = history[nextIndex]
     if (tab) showNavigatorSnapshot(id, tab)
     return
   }

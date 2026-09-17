@@ -74,6 +74,32 @@ func TestMappedDatabaseMigrationOptions(t *testing.T) {
 	}
 }
 
+func TestMigrationTableMatchesSizeAndEstimatedRows(t *testing.T) {
+	source := migrationTable{name: "pets", sizeBytes: 1024, estimatedRows: 10}
+	if !migrationTableMatches(source, migrationTable{name: "pets", sizeBytes: 1024, estimatedRows: 10}) {
+		t.Fatal("equal table metadata was not matched")
+	}
+	if migrationTableMatches(source, migrationTable{name: "pets", sizeBytes: 1024, estimatedRows: 11}) {
+		t.Fatal("different estimated row counts were matched")
+	}
+	if migrationTableMatches(source, migrationTable{name: "pets", sizeBytes: 2048, estimatedRows: 10}) {
+		t.Fatal("different data sizes were matched")
+	}
+}
+
+func TestSelectedMigrationTablesUsesDatabaseAndTable(t *testing.T) {
+	selected := selectedMigrationTables(models.DatabaseMigrationOptions{SelectedTables: []models.DatabaseMigrationSelection{{Database: "shop", Table: "pets"}}})
+	if !selected[migrationSelectionKey("shop", "pets")] {
+		t.Fatal("selected table was not indexed")
+	}
+	if selected[migrationSelectionKey("archive", "pets")] {
+		t.Fatal("a table from another database was selected")
+	}
+	if selectedMigrationTables(models.DatabaseMigrationOptions{}) != nil {
+		t.Fatal("empty selection should preserve the default all-tables behavior")
+	}
+}
+
 func TestUnionKeysIsSortedAndUnique(t *testing.T) {
 	keys := unionKeys(map[string]int{"b": 1, "a": 1}, map[string]int{"c": 1, "a": 2})
 	want := []string{"a", "b", "c"}

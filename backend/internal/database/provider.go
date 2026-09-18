@@ -4,16 +4,18 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/dbfock/database-manager/backend/internal/models"
 )
 
-var validIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
-
 func ValidateIdentifier(identifier string) error {
-	if !validIdentifier.MatchString(identifier) {
-		return fmt.Errorf("invalid database identifier")
+	// MySQL permits quoted identifiers to contain spaces, punctuation, Unicode,
+	// and to start with a digit. Keep validation limited to constraints shared
+	// by database, table, and column names; QuoteIdentifier handles SQL safety.
+	if identifier == "" || !utf8.ValidString(identifier) || strings.ContainsRune(identifier, 0) || utf8.RuneCountInString(identifier) > 64 {
+		return fmt.Errorf("invalid SQL identifier")
 	}
 	return nil
 }
@@ -21,7 +23,7 @@ func QuoteIdentifier(identifier string) (string, error) {
 	if err := ValidateIdentifier(identifier); err != nil {
 		return "", err
 	}
-	return "`" + identifier + "`", nil
+	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`", nil
 }
 
 type Provider interface {

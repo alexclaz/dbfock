@@ -553,17 +553,19 @@ type schemaComparisonRequest struct {
 	SourceConnectionID string `json:"sourceConnectionId"`
 }
 type connectionMigrationRequest struct {
-	SourceConnectionID string                              `json:"sourceConnectionId"`
-	Databases          []string                            `json:"databases"`
-	MaxTableSizeBytes  int64                               `json:"maxTableSizeBytes"`
-	Strategy           string                              `json:"strategy"`
-	TargetDatabase     string                              `json:"targetDatabase"`
-	RecreateTarget     bool                                `json:"recreateTarget"`
-	StructureOnly      bool                                `json:"structureOnly"`
-	IgnoreDuplicates   bool                                `json:"ignoreDuplicates"`
-	CreateMissing      bool                                `json:"createMissingTables"`
-	SkipMatching       bool                                `json:"skipMatchingTables"`
-	SelectedTables     []models.DatabaseMigrationSelection `json:"selectedTables"`
+	SourceConnectionID      string                              `json:"sourceConnectionId"`
+	Databases               []string                            `json:"databases"`
+	MaxTableSizeBytes       int64                               `json:"maxTableSizeBytes"`
+	Strategy                string                              `json:"strategy"`
+	TargetDatabase          string                              `json:"targetDatabase"`
+	RecreateTarget          bool                                `json:"recreateTarget"`
+	StructureOnly           bool                                `json:"structureOnly"`
+	IgnoreDuplicates        bool                                `json:"ignoreDuplicates"`
+	CreateMissing           bool                                `json:"createMissingTables"`
+	SkipMatching            bool                                `json:"skipMatchingTables"`
+	CreateSkippedStructures bool                                `json:"createSkippedTableStructures"`
+	SelectedTables          []models.DatabaseMigrationSelection `json:"selectedTables"`
+	StructureOnlyTables     []models.DatabaseMigrationSelection `json:"structureOnlyTables"`
 }
 
 type rowUpdateRequest struct {
@@ -960,7 +962,7 @@ func (a *API) migrateConnectionDatabases(w http.ResponseWriter, r *http.Request)
 		history.ExecutionTimeMs, history.AffectedRows = result.ExecutionTimeMs, result.RowsMigrated
 		if len(result.FailedTables) > 0 {
 			history.Status = "error"
-			history.ErrorMessage = fmt.Sprintf("%d table(s) could not be migrated", len(result.FailedTables))
+			history.ErrorMessage = migrationFailureSummary(result.FailedTables)
 		}
 	}
 	if err != nil {
@@ -1005,10 +1007,10 @@ func validateConnectionMigrationRequest(req connectionMigrationRequest) error {
 			return fmt.Errorf("mapped database migrations must use merge strategy")
 		}
 	}
-	if len(req.SelectedTables) > 100000 {
+	if len(req.SelectedTables)+len(req.StructureOnlyTables) > 100000 {
 		return fmt.Errorf("too many selected tables")
 	}
-	for _, table := range req.SelectedTables {
+	for _, table := range append(req.SelectedTables, req.StructureOnlyTables...) {
 		if !seen[table.Database] {
 			return fmt.Errorf("selected table database %s was not selected", table.Database)
 		}
@@ -1024,7 +1026,9 @@ func migrationOptions(req connectionMigrationRequest) models.DatabaseMigrationOp
 		Databases: req.Databases, MaxTableSizeBytes: req.MaxTableSizeBytes, Strategy: req.Strategy,
 		TargetDatabase: req.TargetDatabase, RecreateTarget: req.RecreateTarget,
 		StructureOnly: req.StructureOnly, IgnoreDuplicates: req.IgnoreDuplicates,
-		CreateMissing: req.CreateMissing, SkipMatching: req.SkipMatching, SelectedTables: req.SelectedTables,
+		CreateMissing: req.CreateMissing, SkipMatching: req.SkipMatching,
+		CreateSkippedStructures: req.CreateSkippedStructures, SelectedTables: req.SelectedTables,
+		StructureOnlyTables: req.StructureOnlyTables,
 	}
 }
 
@@ -1165,7 +1169,7 @@ func (a *API) runMigrationJob(id string, req connectionMigrationRequest, tooler 
 		history.ExecutionTimeMs, history.AffectedRows = result.ExecutionTimeMs, result.RowsMigrated
 		if len(result.FailedTables) > 0 {
 			history.Status = "error"
-			history.ErrorMessage = fmt.Sprintf("%d table(s) could not be migrated", len(result.FailedTables))
+			history.ErrorMessage = migrationFailureSummary(result.FailedTables)
 		}
 	}
 	if err != nil {
@@ -1174,6 +1178,35 @@ func (a *API) runMigrationJob(id string, req connectionMigrationRequest, tooler 
 	if a.repo != nil {
 		_ = a.repo.AddHistory(context.Background(), history)
 	}
+}
+
+const (
+	migrationFailureErrorLimit   = 300
+	migrationFailureSummaryLimit = 4000
+)
+
+// migrationFailureSummary records which tables failed and why. The per-table
+// errors otherwise live only in the in-memory job, so a page reload or a backend
+// restart loses the one thing that explains an empty table in the target.
+func migrationFailureSummary(failures []models.DatabaseMigrationFailure) string {
+	const prefix = "%d table(s) could not be migrated"
+	summary := fmt.Sprintf(prefix, len(failures))
+	details := make([]string, 0, len(failures))
+	length := len(summary)
+	for index, failure := range failures {
+		message := failure.Error
+		if len(message) > migrationFailureErrorLimit {
+			message = message[:migrationFailureErrorLimit] + "..."
+		}
+		detail := fmt.Sprintf("%s.%s: %s", failure.Database, failure.Table, message)
+		if length+len("; ")+len(detail) > migrationFailureSummaryLimit {
+			details = append(details, fmt.Sprintf("and %d more", len(failures)-index))
+			break
+		}
+		details = append(details, detail)
+		length += len("; ") + len(detail)
+	}
+	return summary + ": " + strings.Join(details, "; ")
 }
 
 // exportDatabaseDump streams the dump instead of buffering it, so the response

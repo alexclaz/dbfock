@@ -52,11 +52,29 @@ func TestMigrationValueUsesTextCharsetForJSON(t *testing.T) {
 	}
 }
 
-func TestMigrationSQLModeAllowsLegacyZeroDates(t *testing.T) {
+func TestMigrationSQLModeAcceptsLegacySourceData(t *testing.T) {
 	got := migrationSQLMode("STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO")
-	want := "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO"
+	want := "ERROR_FOR_DIVISION_BY_ZERO"
 	if got != want {
 		t.Fatalf("migrationSQLMode() = %q, want %q", got, want)
+	}
+}
+
+// A float(12,4) clamped under a non-strict server reads back as 100000000, above
+// its own column maximum of 99999999.9999. Keeping strict mode fails the insert
+// and rolls back the whole table over a row the source considers valid.
+func TestMigrationSQLModeDropsEveryStrictMode(t *testing.T) {
+	got := migrationSQLMode("ONLY_FULL_GROUP_BY,STRICT_ALL_TABLES,strict_trans_tables,NO_ENGINE_SUBSTITUTION")
+	want := "ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION"
+	if got != want {
+		t.Fatalf("migrationSQLMode() = %q, want %q", got, want)
+	}
+}
+
+func TestMigrationSQLModeKeepsUnrelatedModesUntouched(t *testing.T) {
+	const modes = "ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION"
+	if got := migrationSQLMode(modes); got != modes {
+		t.Fatalf("migrationSQLMode() = %q, want %q", got, modes)
 	}
 }
 
@@ -96,7 +114,25 @@ func TestSelectedMigrationTablesUsesDatabaseAndTable(t *testing.T) {
 		t.Fatal("a table from another database was selected")
 	}
 	if selectedMigrationTables(models.DatabaseMigrationOptions{}) != nil {
-		t.Fatal("empty selection should preserve the default all-tables behavior")
+		t.Fatal("omitted selection should preserve the default all-tables behavior")
+	}
+	if selected := selectedMigrationTables(models.DatabaseMigrationOptions{SelectedTables: []models.DatabaseMigrationSelection{}}); selected == nil || len(selected) != 0 {
+		t.Fatal("explicit empty selection should select no tables")
+	}
+}
+
+func TestStructureOnlyMigrationTablesUsesExplicitSelection(t *testing.T) {
+	options := models.DatabaseMigrationOptions{CreateSkippedStructures: true, StructureOnlyTables: []models.DatabaseMigrationSelection{{Database: "shop", Table: "audit-log"}}}
+	selected := structureOnlyMigrationTables(options)
+	if !selected[migrationSelectionKey("shop", "audit-log")] {
+		t.Fatal("structure-only table was not indexed")
+	}
+	if selected[migrationSelectionKey("shop", "pets")] {
+		t.Fatal("unselected table was included in structure-only selection")
+	}
+	options.CreateSkippedStructures = false
+	if selected := structureOnlyMigrationTables(options); len(selected) != 0 {
+		t.Fatal("structure-only selection was used while its option was disabled")
 	}
 }
 

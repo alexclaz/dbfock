@@ -21,6 +21,7 @@ const maxTableSizeMB = ref(10)
 const strategy = ref<'drop_recreate' | 'truncate_insert'>('drop_recreate')
 const createMissingTables = ref(true)
 const skipMatchingTables = ref(false)
+const createSkippedTableStructures = ref(false)
 const migrationResult = ref<DatabaseMigrationResult>()
 const migrationJob = ref<DatabaseMigrationJob>()
 let migrationPollTimer: ReturnType<typeof setTimeout> | undefined
@@ -41,9 +42,21 @@ const migrationPercent = computed(() => {
 })
 function tableKey(database: string, table: string) { return `${database}\u0000${table}` }
 const selectedMigrationTables = computed(() => (migrationPlan.value?.tables ?? []).filter(table => selectedTableKeys.value.includes(tableKey(table.database, table.table))))
+const structureOnlyMigrationTables = computed(() => {
+  if (!createSkippedTableStructures.value || !migrationPlan.value) return []
+  return [
+    ...migrationPlan.value.tables.filter(table => !selectedTableKeys.value.includes(tableKey(table.database, table.table))),
+    ...migrationPlan.value.skippedTables,
+  ]
+})
 const selectedEstimatedRows = computed(() => selectedMigrationTables.value.reduce((total, table) => total + table.estimatedRows, 0))
 const selectedSourceSize = computed(() => selectedMigrationTables.value.reduce((total, table) => total + table.sizeBytes, 0))
 const allTablesSelected = computed(() => Boolean(migrationPlan.value?.tables.length) && selectedTableKeys.value.length === migrationPlan.value!.tables.length)
+const migrationConfirmationDescription = computed(() => {
+  const base = t('connectionTools.confirmDescription', { source: selectedSource.value?.name || '', target: props.connection.name, count: selectedDatabases.value.length, strategy: t(`connectionTools.${strategy.value === 'drop_recreate' ? 'dropRecreate' : 'truncateInsert'}`) })
+  if (!structureOnlyMigrationTables.value.length) return base
+  return `${base} ${t('connectionTools.confirmStructureOnlyDescription', { count: structureOnlyMigrationTables.value.length })}`
+})
 function toggleAllTables() {
   selectedTableKeys.value = allTablesSelected.value ? [] : (migrationPlan.value?.tables ?? []).map(table => tableKey(table.database, table.table))
 }
@@ -79,7 +92,11 @@ function migrationPayload(includeSelection = false) {
     strategy: strategy.value,
     createMissingTables: createMissingTables.value,
     skipMatchingTables: skipMatchingTables.value,
-    ...(includeSelection ? { selectedTables: selectedMigrationTables.value.map(table => ({ database: table.database, table: table.table })) } : {}),
+    createSkippedTableStructures: createSkippedTableStructures.value,
+    ...(includeSelection ? {
+      selectedTables: selectedMigrationTables.value.map(table => ({ database: table.database, table: table.table })),
+      structureOnlyTables: structureOnlyMigrationTables.value.map(table => ({ database: table.database, table: table.table })),
+    } : {}),
   }
 }
 async function previewMigration() {
@@ -120,10 +137,21 @@ async function pollMigration() {
     if (import.meta.client) localStorage.removeItem(`dbfock.migration.${props.connection.id}`)
     if (job.status === 'complete' && job.result) {
       migrationResult.value = job.result
-      if (job.result.failedTables.length) notifyInfo(t('connectionTools.migrationPartial', { migrated: job.result.tablesMigrated, failed: job.result.failedTables.length }))
+      if (job.result.failedTables.length) notifyError(t('connectionTools.migrationPartial', { migrated: job.result.tablesMigrated, failed: job.result.failedTables.length }))
       else notifySuccess(t('connectionTools.migrationSuccess', { tables: job.result.tablesMigrated, rows: job.result.rowsMigrated }))
     } else if (job.error) notifyError(job.error)
-  } catch { scheduleMigrationPoll(1500) }
+  } catch (cause: unknown) {
+    // A 404 means the server no longer knows this job: jobs live in memory, so a
+    // backend restart loses them. Retrying forever would keep the form disabled.
+    if (cause instanceof ApiError && cause.status === 404) { forgetMigrationJob(); notifyInfo(t('connectionTools.migrationLost')); return }
+    scheduleMigrationPoll(1500)
+  }
+}
+function forgetMigrationJob() {
+  if (migrationPollTimer) clearTimeout(migrationPollTimer)
+  migrationJob.value = undefined
+  migrating.value = false
+  if (import.meta.client) localStorage.removeItem(`dbfock.migration.${props.connection.id}`)
 }
 
 watch(sourceConnectionId, async (connectionId) => {
@@ -162,18 +190,20 @@ onBeforeUnmount(() => { if (migrationPollTimer) clearTimeout(migrationPollTimer)
       <fieldset class="mt-4" :disabled="migrating"><legend class="text-sm font-medium">{{ t('connectionTools.strategy') }}</legend><div class="mt-2 grid gap-2 sm:grid-cols-2"><label class="flex cursor-pointer gap-3 rounded-md border border-line p-3" :class="strategy === 'drop_recreate' ? 'border-accent bg-accent/5' : ''"><input v-model="strategy" class="mt-0.5" type="radio" value="drop_recreate"><span><span class="block text-sm font-medium">{{ t('connectionTools.dropRecreate') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('connectionTools.dropRecreateDescription') }}</span></span></label><label class="flex cursor-pointer gap-3 rounded-md border border-line p-3" :class="strategy === 'truncate_insert' ? 'border-accent bg-accent/5' : ''"><input v-model="strategy" class="mt-0.5" type="radio" value="truncate_insert"><span><span class="block text-sm font-medium">{{ t('connectionTools.truncateInsert') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('connectionTools.truncateInsertDescription') }}</span></span></label></div></fieldset>
       <label class="mt-4 flex items-start gap-3 text-sm" :class="strategy === 'drop_recreate' ? 'opacity-60' : ''"><input v-model="createMissingTables" class="mt-0.5" type="checkbox" :disabled="migrating || strategy === 'drop_recreate'"><span><span class="font-medium">{{ t('connectionTools.createMissingTables') }}</span><span class="mt-0.5 block text-xs text-muted">{{ strategy === 'drop_recreate' ? t('connectionTools.createMissingTablesDropHint') : t('connectionTools.createMissingTablesDescription') }}</span></span></label>
       <label class="mt-3 flex items-start gap-3 text-sm"><input v-model="skipMatchingTables" class="mt-0.5" type="checkbox" :disabled="migrating"><span><span class="font-medium">{{ t('connectionTools.skipMatchingTables') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('connectionTools.skipMatchingTablesDescription') }}</span></span></label>
+      <label class="mt-3 flex items-start gap-3 text-sm"><input v-model="createSkippedTableStructures" class="mt-0.5" type="checkbox" :disabled="migrating"><span><span class="font-medium">{{ t('connectionTools.createSkippedTableStructures') }}</span><span class="mt-0.5 block text-xs text-muted">{{ t('connectionTools.createSkippedTableStructuresDescription') }}</span></span></label>
       <div class="mt-4 rounded-md bg-canvas px-3 py-2 text-xs text-muted"><Icon name="lucide:gauge" class="mr-1 inline h-3.5 w-3.5" />{{ t('connectionTools.efficiencyNotice') }}</div>
       <button type="button" class="mt-4 rounded-md border border-line px-3 py-2 text-sm font-medium hover:bg-canvas disabled:opacity-50" :disabled="!canMigrate || previewing || migrating" @click="previewMigration">{{ previewing ? t('connectionTools.preparingReport') : t('connectionTools.prepareReport') }}</button>
       <div v-if="migrationJob?.status === 'running'" class="mt-4 rounded-md border border-accent/30 bg-accent/5 p-3"><div class="flex items-center justify-between gap-3 text-sm"><span class="font-medium">{{ t('connectionTools.backgroundMigration') }}</span><span>{{ migrationPercent }}%</span></div><div class="mt-2 h-2 overflow-hidden rounded-full bg-line"><div class="h-full rounded-full bg-accent transition-[width] duration-300" :style="{ width: `${migrationPercent}%` }" /></div><p class="mt-2 text-xs text-muted">{{ t('connectionTools.progressSummary', { completed: migrationJob.progress.completedTables, total: migrationJob.progress.totalTables, rows: migrationJob.progress.rowsMigrated }) }}<span v-if="migrationJob.progress.currentTable"> · {{ migrationJob.progress.currentDatabase }}.{{ migrationJob.progress.currentTable }}</span></p><p class="mt-1 text-xs text-muted">{{ t('connectionTools.backgroundNotice') }}</p></div>
       <div v-if="migrationPlan" class="mt-4 rounded-md border border-line bg-canvas p-3 text-sm">
         <h4 class="font-semibold">{{ t('connectionTools.reportTitle') }}</h4>
         <p class="mt-1 text-muted">{{ t('connectionTools.reportSummary', { tables: selectedMigrationTables.length, rows: selectedEstimatedRows, size: formatBytes(selectedSourceSize) }) }}</p>
+        <p v-if="structureOnlyMigrationTables.length" class="mt-1 text-muted">{{ t('connectionTools.structureOnlySummary', { count: structureOnlyMigrationTables.length }) }}</p>
         <details class="mt-3 overflow-hidden rounded border border-line"><summary class="cursor-pointer px-3 py-2 font-medium">{{ t('connectionTools.tablesToMigrate', { count: selectedMigrationTables.length }) }}</summary><div class="max-h-64 overflow-auto border-t border-line"><table class="min-w-full text-left text-xs"><thead class="sticky top-0 bg-panel text-muted"><tr><th class="w-9 px-3 py-2"><input type="checkbox" :checked="allTablesSelected" :disabled="migrating || !migrationPlan.tables.length" :aria-label="t('connectionTools.selectAllTables')" :title="t('connectionTools.selectAllTables')" @change="toggleAllTables"></th><th class="px-3 py-2 font-medium">{{ t('table.table') }}</th><th class="px-3 py-2 text-right font-medium">{{ t('connectionTools.estimatedRows') }}</th><th class="px-3 py-2 text-right font-medium">{{ t('connectionTools.sourceSize') }}</th><th class="px-3 py-2 text-right font-medium">{{ t('connectionTools.targetSize') }}</th></tr></thead><tbody><tr v-for="table in migrationPlan.tables" :key="`${table.database}.${table.table}`" class="border-t border-line" :class="selectedTableKeys.includes(tableKey(table.database, table.table)) ? '' : 'opacity-50'"><td class="px-3 py-2"><input v-model="selectedTableKeys" type="checkbox" :value="tableKey(table.database, table.table)" :disabled="migrating" :aria-label="t('connectionTools.selectNamedTable', { table: `${table.database}.${table.table}` })"></td><td class="px-3 py-2 font-mono">{{ table.database }}.{{ table.table }}</td><td class="px-3 py-2 text-right">{{ table.estimatedRows }}</td><td class="px-3 py-2 text-right">{{ formatBytes(table.sizeBytes) }}</td><td class="px-3 py-2 text-right">{{ table.targetSizeBytes == null ? '—' : formatBytes(table.targetSizeBytes) }}</td></tr></tbody></table></div></details>
         <details v-if="migrationPlan.skippedTables.length" class="mt-2"><summary class="cursor-pointer text-amber-700 dark:text-amber-300">{{ t('connectionTools.skippedTables', { count: migrationPlan.skippedTables.length }) }}</summary><ul class="mt-2 grid gap-1 text-xs text-muted"><li v-for="table in migrationPlan.skippedTables" :key="`${table.database}.${table.table}`">{{ table.database }}.{{ table.table }} · {{ formatBytes(table.sizeBytes) }}</li></ul></details>
-        <button type="button" class="mt-4 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="!selectedMigrationTables.length || migrating" @click="showMigrationConfirmation = true">{{ migrating ? t('connectionTools.migrating') : t('connectionTools.migrate') }}</button>
+        <button type="button" class="mt-4 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="(!selectedMigrationTables.length && !structureOnlyMigrationTables.length) || migrating" @click="showMigrationConfirmation = true">{{ migrating ? t('connectionTools.migrating') : t('connectionTools.migrate') }}</button>
       </div>
-      <div v-if="migrationResult" class="mt-4 rounded-md border border-line bg-canvas p-3 text-sm"><p>{{ t('connectionTools.migrationSummary', { databases: migrationResult.databasesMigrated, tables: migrationResult.tablesMigrated, rows: migrationResult.rowsMigrated }) }}</p><details v-if="migrationResult.failedTables.length" class="mt-2"><summary class="cursor-pointer font-medium text-rose-600">{{ t('connectionTools.failedTables', { count: migrationResult.failedTables.length }) }}</summary><ul class="mt-2 grid gap-2 text-xs"><li v-for="table in migrationResult.failedTables" :key="`${table.database}.${table.table}`" class="rounded border border-rose-500/20 bg-rose-500/5 p-2"><span class="font-mono font-medium">{{ table.database }}.{{ table.table }}</span><span class="mt-1 block break-words text-muted">{{ table.error }}</span></li></ul></details><details v-if="migrationResult.skippedTables.length" class="mt-2"><summary class="cursor-pointer text-amber-700 dark:text-amber-300">{{ t('connectionTools.skippedTables', { count: migrationResult.skippedTables.length }) }}</summary><ul class="mt-2 grid gap-1 text-xs text-muted"><li v-for="table in migrationResult.skippedTables" :key="`${table.database}.${table.table}`">{{ table.database }}.{{ table.table }} · {{ formatBytes(table.sizeBytes) }}</li></ul></details></div>
+      <div v-if="migrationResult" class="mt-4 rounded-md border border-line bg-canvas p-3 text-sm"><p>{{ t('connectionTools.migrationSummary', { databases: migrationResult.databasesMigrated, tables: migrationResult.tablesMigrated, rows: migrationResult.rowsMigrated }) }}</p><details v-if="migrationResult.failedTables.length" open class="mt-2"><summary class="cursor-pointer font-medium text-rose-600">{{ t('connectionTools.failedTables', { count: migrationResult.failedTables.length }) }}</summary><ul class="mt-2 grid gap-2 text-xs"><li v-for="table in migrationResult.failedTables" :key="`${table.database}.${table.table}`" class="rounded border border-rose-500/20 bg-rose-500/5 p-2"><span class="font-mono font-medium">{{ table.database }}.{{ table.table }}</span><span class="mt-1 block break-words text-muted">{{ table.error }}</span></li></ul></details><details v-if="migrationResult.skippedTables.length" class="mt-2"><summary class="cursor-pointer text-amber-700 dark:text-amber-300">{{ t('connectionTools.skippedTables', { count: migrationResult.skippedTables.length }) }}</summary><ul class="mt-2 grid gap-1 text-xs text-muted"><li v-for="table in migrationResult.skippedTables" :key="`${table.database}.${table.table}`">{{ table.database }}.{{ table.table }} · {{ formatBytes(table.sizeBytes) }}</li></ul></details></div>
     </section>
-    <AppConfirmDialog v-model="showMigrationConfirmation" :title="t('connectionTools.confirmTitle')" :description="t('connectionTools.confirmDescription', { source: selectedSource?.name || '', target: connection.name, count: selectedDatabases.length, strategy: t(`connectionTools.${strategy === 'drop_recreate' ? 'dropRecreate' : 'truncateInsert'}`) })" :confirm-label="t('connectionTools.confirm')" :cancel-label="t('common.close')" tone="danger" @confirm="migrate" />
+    <AppConfirmDialog v-model="showMigrationConfirmation" :title="t('connectionTools.confirmTitle')" :description="migrationConfirmationDescription" :confirm-label="t('connectionTools.confirm')" :cancel-label="t('common.close')" tone="danger" @confirm="migrate" />
   </div>
 </template>

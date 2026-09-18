@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -200,11 +201,24 @@ func migrationSelectionKey(databaseName, tableName string) string {
 }
 
 func selectedMigrationTables(options models.DatabaseMigrationOptions) map[string]bool {
-	if len(options.SelectedTables) == 0 {
+	// A nil selection means "all tables" (preview and database-level tools).
+	// A present but empty JSON array means the user explicitly selected none.
+	if options.SelectedTables == nil {
 		return nil
 	}
 	selected := make(map[string]bool, len(options.SelectedTables))
 	for _, table := range options.SelectedTables {
+		selected[migrationSelectionKey(table.Database, table.Table)] = true
+	}
+	return selected
+}
+
+func structureOnlyMigrationTables(options models.DatabaseMigrationOptions) map[string]bool {
+	if !options.CreateSkippedStructures {
+		return map[string]bool{}
+	}
+	selected := make(map[string]bool, len(options.StructureOnlyTables))
+	for _, table := range options.StructureOnlyTables {
 		selected[migrationSelectionKey(table.Database, table.Table)] = true
 	}
 	return selected
@@ -274,15 +288,15 @@ func (p *Provider) PlanMigration(ctx context.Context, source, target models.Conn
 			if selectedTables != nil && !selectedTables[migrationSelectionKey(databaseName, table.name)] {
 				continue
 			}
+			if table.sizeBytes > options.MaxTableSizeBytes {
+				plan.SkippedTables = append(plan.SkippedTables, models.DatabaseMigrationSkip{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, Reason: "size_limit"})
+				continue
+			}
 			targetTable, targetExists := targetTables[table.name]
 			if options.Strategy == "truncate_insert" && !options.CreateMissing && !targetExists {
 				continue
 			}
 			if options.SkipMatching && !options.RecreateTarget && targetExists && migrationTableMatches(table, targetTable) {
-				continue
-			}
-			if table.sizeBytes > options.MaxTableSizeBytes {
-				plan.SkippedTables = append(plan.SkippedTables, models.DatabaseMigrationSkip{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, Reason: "size_limit"})
 				continue
 			}
 			plannedTable := models.DatabaseMigrationTable{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, EstimatedRows: table.estimatedRows}
@@ -325,7 +339,7 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 	relaxedSQLMode := migrationSQLMode(originalSQLMode)
 	if relaxedSQLMode != originalSQLMode {
 		if _, err = targetConn.ExecContext(ctx, "SET SESSION sql_mode = ?", relaxedSQLMode); err != nil {
-			return nil, fmt.Errorf("allow legacy zero dates during migration: %w", err)
+			return nil, fmt.Errorf("accept legacy source data during migration: %w", err)
 		}
 		defer func() {
 			restoreContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -339,8 +353,13 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 	defer targetConn.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=1")
 
 	result := &models.DatabaseMigrationResult{SkippedTables: []models.DatabaseMigrationSkip{}, FailedTables: []models.DatabaseMigrationFailure{}}
-	tablesByDatabase := make(map[string][]migrationTable, len(options.Databases))
+	type migrationTask struct {
+		table         migrationTable
+		structureOnly bool
+	}
+	tablesByDatabase := make(map[string][]migrationTask, len(options.Databases))
 	selectedTables := selectedMigrationTables(options)
+	structureOnlyTables := structureOnlyMigrationTables(options)
 	totalTables := 0
 	for _, databaseName := range options.Databases {
 		var databaseCount int
@@ -362,7 +381,24 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 			}
 		}
 		for _, table := range tables {
-			if selectedTables != nil && !selectedTables[migrationSelectionKey(databaseName, table.name)] {
+			selectionKey := migrationSelectionKey(databaseName, table.name)
+			if structureOnlyTables[selectionKey] {
+				if table.sizeBytes > options.MaxTableSizeBytes {
+					result.SkippedTables = append(result.SkippedTables, models.DatabaseMigrationSkip{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, Reason: "size_limit"})
+				}
+				tablesByDatabase[databaseName] = append(tablesByDatabase[databaseName], migrationTask{table: table, structureOnly: true})
+				totalTables++
+				continue
+			}
+			if selectedTables != nil && !selectedTables[selectionKey] {
+				continue
+			}
+			if table.sizeBytes > options.MaxTableSizeBytes {
+				result.SkippedTables = append(result.SkippedTables, models.DatabaseMigrationSkip{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, Reason: "size_limit"})
+				if options.CreateSkippedStructures {
+					tablesByDatabase[databaseName] = append(tablesByDatabase[databaseName], migrationTask{table: table, structureOnly: true})
+					totalTables++
+				}
 				continue
 			}
 			targetTable, targetExists := targetTables[table.name]
@@ -372,11 +408,7 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 			if options.SkipMatching && !options.RecreateTarget && targetExists && migrationTableMatches(table, targetTable) {
 				continue
 			}
-			if table.sizeBytes > options.MaxTableSizeBytes {
-				result.SkippedTables = append(result.SkippedTables, models.DatabaseMigrationSkip{Database: databaseName, Table: table.name, SizeBytes: table.sizeBytes, Reason: "size_limit"})
-				continue
-			}
-			tablesByDatabase[databaseName] = append(tablesByDatabase[databaseName], table)
+			tablesByDatabase[databaseName] = append(tablesByDatabase[databaseName], migrationTask{table: table})
 			totalTables++
 		}
 	}
@@ -419,14 +451,20 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 		if _, err = targetConn.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+quotedDatabase); err != nil {
 			return nil, err
 		}
-		for _, table := range tablesByDatabase[databaseName] {
+		for _, task := range tablesByDatabase[databaseName] {
+			table := task.table
 			progress.CurrentDatabase, progress.CurrentTable = databaseName, table.name
 			progress.CurrentTableRows, progress.CurrentTableEstimatedRows = 0, table.estimatedRows
 			if reportProgress != nil {
 				reportProgress(progress)
 			}
 			rowsBeforeTable := result.RowsMigrated
-			rowsCopied, migrateErr := migrateTable(ctx, sourceDB, targetConn, databaseName, targetDatabase, table.name, options, func(tableRows int64) {
+			tableOptions := options
+			if task.structureOnly {
+				tableOptions.StructureOnly = true
+				tableOptions.CreateMissing = true
+			}
+			rowsCopied, migrateErr := migrateTable(ctx, sourceDB, targetConn, databaseName, targetDatabase, table.name, tableOptions, func(tableRows int64) {
 				progress.RowsMigrated = rowsBeforeTable + tableRows
 				progress.CurrentTableRows = tableRows
 				if reportProgress != nil {
@@ -439,7 +477,7 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 				}
 				failureMessage := migrateErr.Error()
 				quotedTable, quoteErr := database.QuoteIdentifier(table.name)
-				if quoteErr == nil && (options.Strategy != "merge" || options.RecreateTarget) {
+				if quoteErr == nil && !tableOptions.StructureOnly && (options.Strategy != "merge" || options.RecreateTarget) {
 					if _, cleanupErr := targetConn.ExecContext(ctx, "TRUNCATE TABLE "+quotedDatabase+"."+quotedTable); cleanupErr != nil {
 						failureMessage += "; cleanup failed: " + cleanupErr.Error()
 					}
@@ -468,11 +506,21 @@ func (p *Provider) MigrateDatabases(ctx context.Context, source, target models.C
 	return result, nil
 }
 
+// relaxedMigrationModes are dropped from the target session so the migration
+// accepts whatever the source already stores. Legacy data routinely violates
+// modern strictness: a zero date, or a float(12,4) holding 100000000 because it
+// was clamped under a non-strict server and now reads back above its own column
+// maximum. Such a row is not insertable into its own schema, and with the modes
+// kept the whole table fails and is rolled back over data the source considers
+// valid. The target DDL is copied from the source, so a value that fits there
+// fits here.
+var relaxedMigrationModes = []string{"NO_ZERO_DATE", "NO_ZERO_IN_DATE", "STRICT_TRANS_TABLES", "STRICT_ALL_TABLES"}
+
 func migrationSQLMode(current string) string {
 	kept := make([]string, 0)
 	for _, mode := range strings.Split(current, ",") {
 		mode = strings.TrimSpace(mode)
-		if strings.EqualFold(mode, "NO_ZERO_DATE") || strings.EqualFold(mode, "NO_ZERO_IN_DATE") || mode == "" {
+		if mode == "" || slices.ContainsFunc(relaxedMigrationModes, func(relaxed string) bool { return strings.EqualFold(mode, relaxed) }) {
 			continue
 		}
 		kept = append(kept, mode)

@@ -84,3 +84,32 @@ func TestRequireConnected(t *testing.T) {
 		t.Fatalf("disconnected database error = %v, want %v", err, errDatabaseNotConnected)
 	}
 }
+
+func TestMigrationHistoryKeepsWhichTablesFailedAndWhy(t *testing.T) {
+	summary := migrationFailureSummary([]models.DatabaseMigrationFailure{
+		{Database: "shop", Table: "orders", Error: "Error 1153: Got a packet bigger than 'max_allowed_packet' bytes"},
+		{Database: "shop", Table: "invoices", Error: "Error 1292: Incorrect datetime value"},
+	})
+	if !strings.Contains(summary, "2 table(s) could not be migrated") {
+		t.Fatalf("summary lost the failure count: %s", summary)
+	}
+	for _, expected := range []string{"shop.orders", "max_allowed_packet", "shop.invoices", "Incorrect datetime value"} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("summary lost %q: %s", expected, summary)
+		}
+	}
+}
+
+func TestMigrationHistoryStaysBoundedWhenEveryTableFails(t *testing.T) {
+	failures := make([]models.DatabaseMigrationFailure, 500)
+	for index := range failures {
+		failures[index] = models.DatabaseMigrationFailure{Database: "shop", Table: "orders", Error: strings.Repeat("x", 2_000)}
+	}
+	summary := migrationFailureSummary(failures)
+	if len(summary) > migrationFailureSummaryLimit+200 {
+		t.Fatalf("summary grew to %d characters", len(summary))
+	}
+	if !strings.Contains(summary, "more") {
+		t.Fatalf("truncated summary does not say how many failures were dropped: %s", summary)
+	}
+}

@@ -703,11 +703,11 @@ func (p *Provider) RecreateDatabase(ctx context.Context, c models.Connection, da
 		return nil, err
 	}
 	create := "CREATE DATABASE " + quotedDatabase
-	if database.ValidateIdentifier(charset.String) == nil {
-		create += " CHARACTER SET " + charset.String
+	if quotedCharset, quoteErr := database.QuoteIdentifier(charset.String); quoteErr == nil {
+		create += " CHARACTER SET " + quotedCharset
 	}
-	if database.ValidateIdentifier(collation.String) == nil {
-		create += " COLLATE " + collation.String
+	if quotedCollation, quoteErr := database.QuoteIdentifier(collation.String); quoteErr == nil {
+		create += " COLLATE " + quotedCollation
 	}
 	if _, err = db.ExecContext(ctx, create); err != nil {
 		return nil, err

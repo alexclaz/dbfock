@@ -187,16 +187,18 @@ type ColumnSchemaDifference struct {
 }
 
 type DatabaseMigrationOptions struct {
-	Databases         []string                     `json:"databases"`
-	MaxTableSizeBytes int64                        `json:"maxTableSizeBytes"`
-	Strategy          string                       `json:"strategy"`
-	TargetDatabase    string                       `json:"targetDatabase,omitempty"`
-	RecreateTarget    bool                         `json:"recreateTarget,omitempty"`
-	StructureOnly     bool                         `json:"structureOnly,omitempty"`
-	IgnoreDuplicates  bool                         `json:"ignoreDuplicates,omitempty"`
-	CreateMissing     bool                         `json:"createMissingTables,omitempty"`
-	SkipMatching      bool                         `json:"skipMatchingTables,omitempty"`
-	SelectedTables    []DatabaseMigrationSelection `json:"selectedTables,omitempty"`
+	Databases               []string                     `json:"databases"`
+	MaxTableSizeBytes       int64                        `json:"maxTableSizeBytes"`
+	Strategy                string                       `json:"strategy"`
+	TargetDatabase          string                       `json:"targetDatabase,omitempty"`
+	RecreateTarget          bool                         `json:"recreateTarget,omitempty"`
+	StructureOnly           bool                         `json:"structureOnly,omitempty"`
+	IgnoreDuplicates        bool                         `json:"ignoreDuplicates,omitempty"`
+	CreateMissing           bool                         `json:"createMissingTables,omitempty"`
+	SkipMatching            bool                         `json:"skipMatchingTables,omitempty"`
+	CreateSkippedStructures bool                         `json:"createSkippedTableStructures,omitempty"`
+	SelectedTables          []DatabaseMigrationSelection `json:"selectedTables,omitempty"`
+	StructureOnlyTables     []DatabaseMigrationSelection `json:"structureOnlyTables,omitempty"`
 }
 type DatabaseMigrationSelection struct {
 	Database string `json:"database"`

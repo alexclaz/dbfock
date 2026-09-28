@@ -40,7 +40,7 @@ const queryError = ref('')
 const showGlobalSearch = ref(false)
 const history = ref<QueryHistory[]>([])
 const selectedSavedQueryId = ref('')
-const sqlWorkspace = ref<{ ask: (prompt: string) => Promise<void> | undefined }>()
+const sqlWorkspace = ref<{ ask: (prompt: string) => Promise<void> | undefined; focusEditor: () => void }>()
 const databaseTree = ref<{ refreshConnection: (connectionId: string, expand?: boolean) => Promise<void> }>()
 const aiConfigured = ref(false)
 const aiVisible = ref(true)
@@ -70,6 +70,7 @@ const smartQueryError = ref('')
 const smartQueryErrorConnectionId = ref<string>()
 const activeQueries = new Map<string, ActiveQuery>()
 const queryGenerations = new Map<string, number>()
+const settingsReturnTabId = ref<string>()
 
 const activeTab = computed<WorkspaceTab>(() => workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? { id: 'empty', title: '', type: 'empty' })
 const activeResultTabs = computed(() => resultTabs[activeTab.value.id] || [])
@@ -113,6 +114,7 @@ function seedSQL(target?: { database?: string; table?: string }) {
   return 'SELECT * FROM users LIMIT 100;'
 }
 function openSettings(section?: 'appearance' | 'shortcuts' | 'connections' | 'ai' | 'audit' | 'backup' | 'about') {
+  if (activeTab.value.type !== 'settings') settingsReturnTabId.value = activeTab.value.id
   const existing = workspace.tabs.find((tab) => tab.id === 'settings')
   if (existing) existing.settingsSection = section || 'appearance'
   else workspace.openTab({ id: 'settings', title: t('settings.title'), type: 'settings', settingsSection: section || 'appearance' })
@@ -246,9 +248,14 @@ async function requestCloseTabs(targets: WorkspaceTab[]) {
       if (!await saveQuery(tab)) return
     }
   }
+  const returnToTabId = targets.some((tab) => tab.id === workspace.activeTabId && tab.type === 'settings') ? settingsReturnTabId.value : undefined
   recentlyClosedTabs.value = [...recentlyClosedTabs.value, ...targets.filter((tab) => tab.id !== 'welcome').map((tab) => ({ ...tab }))].slice(-20)
   workspace.archiveQueryTabs(targets)
   workspace.closeTabs(new Set(targets.map((tab) => tab.id)))
+  if (returnToTabId && workspace.tabs.some((tab) => tab.id === returnToTabId)) {
+    selectTab(returnToTabId)
+    settingsReturnTabId.value = undefined
+  }
 }
 function reopenLastClosedTab() {
   const tab = recentlyClosedTabs.value.pop()
@@ -812,6 +819,7 @@ function selectTab(id: string) {
   if (!tab) return
   workspace.activeTabId = id
   if (tab.connectionId) workspace.activeConnectionId = tab.connectionId
+  if (tab.type === 'sql') nextTick(() => sqlWorkspace.value?.focusEditor())
 }
 function updateTableSection(section: 'data' | 'structure' | 'constraints' | 'foreignKeys' | 'references' | 'triggers' | 'indexes' | 'ddl' | 'diagram' | 'tools') { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab) { tab.tableSection = section; tab.dirty = true } }
 function updateDatabaseSection(section: 'tables' | 'diagram' | 'tools') { const tab = workspace.tabs.find((item) => item.id === workspace.activeTabId); if (tab) { tab.databaseSection = section; tab.dirty = true } }

@@ -56,11 +56,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const sqlEditor = ref<{ insertSQL: (sql: string) => void }>()
+const sqlEditor = ref<{ insertSQL: (sql: string) => void; focusEditor: () => void }>()
 const aiAgent = ref<{ ask: (prompt: string) => Promise<void>; pasteQuery: (sql: string) => void }>()
 
 function ask(prompt: string) { return aiAgent.value?.ask(prompt) }
-defineExpose({ ask })
+function focusEditor() { sqlEditor.value?.focusEditor() }
+defineExpose({ ask, focusEditor })
 
 function resizeVertical(event: PointerEvent) {
   const host = (event.currentTarget as HTMLElement).parentElement

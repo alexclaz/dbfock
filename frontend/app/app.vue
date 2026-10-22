@@ -33,6 +33,15 @@ function blockSelectAll(event: KeyboardEvent) {
   event.preventDefault()
 }
 
+// Fields here hold identifiers, SQL and hostnames, so the WebView's autocorrect bubble and spelling squiggles only get in the way.
+function disableTextAssist(event: FocusEvent) {
+  const target = event.target
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return
+  target.spellcheck = false
+  target.setAttribute('autocorrect', 'off')
+  target.setAttribute('autocapitalize', 'off')
+}
+
 function applyTheme() {
   if (!import.meta.client) return
   const dark = theme.value !== 'dbfock-light' && theme.value !== 'github-light' && theme.value !== 'vscode-light'
@@ -61,6 +70,7 @@ onMounted(() => {
   else if (saved === 'dark') theme.value = 'vscode-dark'
   else if (saved === 'auto' || saved === 'system') theme.value = 'vscode-dark'
   window.addEventListener('beforeunload', confirmLeaving)
+  document.addEventListener('focusin', disableTextAssist, true)
   document.documentElement.classList.toggle('wails', isWails)
   if (isWails) window.addEventListener('keydown', blockSelectAll)
   applyTheme()
@@ -72,6 +82,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', confirmLeaving)
+  document.removeEventListener('focusin', disableTextAssist, true)
   if (isWails) window.removeEventListener('keydown', blockSelectAll)
   document.documentElement.classList.remove('wails')
 })

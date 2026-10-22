@@ -208,8 +208,14 @@ function currentExecutionBlock(): ExecutionBlock | undefined {
     const to = selection.to - trailing
     return { from, to, sql: source.slice(from, to) }
   }
-  const cursor = selection.head
-  const { from: start, to: end } = statementRange(source, cursor)
+  let cursor = selection.head
+  let { from: start, to: end } = statementRange(source, cursor)
+  // On a blank line between blocks, fall back to the block above (or below at the top of the editor) instead of running nothing.
+  if (!/\S/.test(source.slice(start, end))) {
+    const above = source.slice(0, cursor).trimEnd().length
+    cursor = above > 0 ? above - 1 : source.length - source.slice(cursor).trimStart().length
+    ;({ from: start, to: end } = statementRange(source, cursor))
+  }
   const raw = source.slice(start, end)
   const leading = raw.search(/\S/)
   if (leading < 0) return undefined
@@ -219,6 +225,15 @@ function currentExecutionBlock(): ExecutionBlock | undefined {
   return { from, to, sql: source.slice(from, to) }
 }
 function runCurrentStatement(newResultTab = false) { const block = currentExecutionBlock(); if (block) emit('execute', block.sql, newResultTab) }
+// WebKit drops keydowns that end a dead-key composition (e.g. `'` on US-International/ABNT2), so CodeMirror's keymap
+// never sees Alt/Mod-Enter there and macOS inserts a newline instead. Catch it before CodeMirror and run on the next
+// task, once the composed character is in the document.
+function runShortcutBeforeComposition(event: KeyboardEvent) {
+  if (event.shiftKey || !(event.altKey || event.metaKey || event.ctrlKey) || (event.code !== 'Enter' && event.code !== 'NumpadEnter' && event.key !== 'Enter')) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  setTimeout(() => runCurrentStatement())
+}
 function toggleCurrentBlockComment() {
   const block = currentExecutionBlock()
   if (!view || !block) return false
@@ -607,7 +622,7 @@ function selectAllOccurrences(view: EditorView) {
 }
 
 function createEditorState(doc: string) {
-  return EditorState.create({ doc, extensions: [EditorState.allowMultipleSelections.of(true), EditorView.clickAddsSelectionRange.of((event) => event.altKey), lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, { key: 'Mod-Shift-l', run: selectAllOccurrences }, { key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-h', run: () => { focusReplace(); return true } }, { key: 'Mod-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Alt-Enter', run: () => { runCurrentStatement(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, { key: 'Enter', run: insertNewline, shift: insertNewline }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { const preferredSearchMatchFrom = nextSearchMatchFrom; nextSearchMatchFrom = undefined; const cursorPosition = update.state.selection.main.head; syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { if (preferredSearchMatchFrom === undefined) refreshSearchAfterEdit(cursorPosition); else { updateSearchHighlights(); selectSearchMatchAtOrAfter(preferredSearchMatchFrom) }; updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
+  return EditorState.create({ doc, extensions: [EditorState.allowMultipleSelections.of(true), EditorView.clickAddsSelectionRange.of((event) => event.altKey), lineNumbers(), searchHighlights, history(), drawSelection(), sql({ dialect: MySQL }), syntaxHighlighting(highlights), themeCompartment.of(createEditorTheme(isDarkTheme.value)), contextMenuHandler, autocompletion({ override: [completionSource], activateOnTyping: true }), keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, { key: 'Mod-Shift-l', run: selectAllOccurrences }, { key: 'Mod-f', run: () => { focusSearch(); return true } }, { key: 'Mod-h', run: () => { focusReplace(); return true } }, { key: 'Mod-\\', run: () => { runCurrentStatement(true); return true } }, { key: 'Mod-/', run: toggleCurrentBlockComment }, { key: 'Mod-Space', run: startCompletion }, { key: 'Enter', run: insertNewline, shift: insertNewline }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]), EditorView.updateListener.of((update) => { if (update.docChanged) { const preferredSearchMatchFrom = nextSearchMatchFrom; nextSearchMatchFrom = undefined; const cursorPosition = update.state.selection.main.head; syncing = true; emit('update:modelValue', update.state.doc.toString()); nextTick(() => { syncing = false; if (searchQuery.value) { if (preferredSearchMatchFrom === undefined) refreshSearchAfterEdit(cursorPosition); else { updateSearchHighlights(); selectSearchMatchAtOrAfter(preferredSearchMatchFrom) }; updateSearchControls() } }); updateSearchControls() }; if (update.selectionSet || update.docChanged) { updateSelectedSQL(); closeContextMenu() } })] })
 }
 
 function persistEditorViewport(tabId: string, viewport: { top: number; left: number }) {
@@ -673,6 +688,7 @@ onMounted(() => {
   if (props.scrollTop !== undefined && props.scrollLeft !== undefined) editorViewports.set(currentTabId, { top: props.scrollTop, left: props.scrollLeft })
   view = new EditorView({ state: editorStates.get(currentTabId) || createEditorState(props.modelValue), parent: editorHost.value! })
   view.scrollDOM.addEventListener('scroll', rememberEditorScroll, { passive: true })
+  view.dom.addEventListener('keydown', runShortcutBeforeComposition, true)
   restoreEditorViewport(currentTabId)
   mountSearchControls()
   document.addEventListener('pointerdown', closeContextMenuOnPointerDown)

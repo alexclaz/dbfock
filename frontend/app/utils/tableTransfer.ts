@@ -76,7 +76,9 @@ function sqlValue(value: unknown) {
   }
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE'
   const text = typeof value === 'string' ? value : JSON.stringify(value)
-  return `'${text.replaceAll("'", "''")}'`
+  // MySQL treats a backslash as an escape character inside string literals, so
+  // a value ending in a backslash would otherwise swallow the closing quote.
+  return `'${text.replaceAll('\\', '\\\\').replaceAll("'", "''")}'`
 }
 
 function valueForColumn(value: unknown, databaseType?: string) {

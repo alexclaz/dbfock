@@ -130,6 +130,11 @@ function tableCompletion(table: TableInfo, database: string): Completion {
   const insert = alias ? `${table.name} ${alias}` : table.name
   return { label: insert, type: 'class', detail: `${database} table`, apply: insert }
 }
+// Equal-quality matches are otherwise sorted alphabetically. A boost below 1
+// can't outrank a better match or a keyword, but keeps columns in table order.
+function columnCompletions(columns: ColumnInfo[], label: (column: ColumnInfo) => string, detail: (column: ColumnInfo) => string): Completion[] {
+  return columns.map((column, index) => ({ label: label(column), type: 'property', detail: detail(column), boost: (columns.length - index) / (columns.length + 1) }))
+}
 async function completionSource(context: CompletionContext) {
   const word = context.matchBefore(/[A-Za-z0-9_$]*/)
   if (!context.explicit && !word?.text) return null
@@ -151,7 +156,7 @@ async function completionSource(context: CompletionContext) {
   if (qualifier) {
     const reference = tableReferences(statementText).find((item) => item.alias === qualifier || item.table === qualifier)
     if (reference) {
-      try { options.push(...(await getColumns(reference.database, reference.table)).map((column) => ({ label: column.name, type: 'property', detail: column.columnType }))) } catch { /* leave the normal suggestions available */ }
+      try { options.push(...columnCompletions(await getColumns(reference.database, reference.table), (column) => column.name, (column) => column.columnType)) } catch { /* leave the normal suggestions available */ }
     } else {
       try { options.push(...(await getTables(qualifier)).map((table) => tableCompletion(table, qualifier))) } catch { /* leave the normal suggestions available */ }
     }
@@ -161,7 +166,7 @@ async function completionSource(context: CompletionContext) {
       try { options.push(...(await getTables(database)).map((table) => tableCompletion(table, database))) } catch { /* leave the normal suggestions available */ }
     }
     for (const reference of tableReferences(statementText)) {
-      try { options.push(...(await getColumns(reference.database, reference.table)).map((column) => ({ label: `${reference.alias}.${column.name}`, type: 'property', detail: `${reference.table} · ${column.columnType}` }))) } catch { /* leave the normal suggestions available */ }
+      try { options.push(...columnCompletions(await getColumns(reference.database, reference.table), (column) => `${reference.alias}.${column.name}`, (column) => `${reference.table} · ${column.columnType}`)) } catch { /* leave the normal suggestions available */ }
     }
   }
   return { from, options, validFor: /^[A-Za-z0-9_$]*$/ }
